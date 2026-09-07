@@ -86,6 +86,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
   const [showPointCloud, setShowPointCloud] = useState(true);
   const [show5GLinks, setShow5GLinks] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
+  const [isLayersDropdownOpen, setIsLayersDropdownOpen] = useState(false);
   const [heatmapMode, setHeatmapMode] = useState<'THERMAL' | 'AGENT_SPECTRUM'>('THERMAL');
   const [heatmapOpacity, setHeatmapOpacity] = useState(0.72);
   const [showCoverageGaps, setShowCoverageGaps] = useState(true);
@@ -1342,6 +1343,128 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
       onMouseLeave={handleMouseUp}
       onWheel={handleWheel}
     >
+      {/* Top Left: Map Layers Dropdown Menu */}
+      <div className="absolute top-2.5 left-2.5 z-30 font-sans select-none pointer-events-auto">
+        <button
+          id="btn-map-layers-dropdown"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsLayersDropdownOpen(!isLayersDropdownOpen);
+          }}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-sm border backdrop-blur-md shadow-lg transition-all cursor-pointer text-xs font-semibold ${
+            isLayersDropdownOpen
+              ? 'bg-zinc-900 border-cyan-500 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.2)]'
+              : 'bg-black/90 border-zinc-800 text-zinc-100 hover:border-zinc-700 hover:bg-zinc-950'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Layers</span>
+          <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.2 rounded-xs bg-zinc-900 border border-zinc-800 text-zinc-400 font-medium">
+            {[showHeatmap, showTrajectories, showPointCloud, show5GLinks].filter(Boolean).length}/4
+          </span>
+          <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${isLayersDropdownOpen ? 'rotate-180 text-cyan-400' : ''}`} />
+        </button>
+
+        {/* Dropdown Menu Popup */}
+        {isLayersDropdownOpen && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute top-full left-0 mt-1.5 w-64 bg-zinc-950/95 backdrop-blur-md border border-zinc-800 rounded-sm shadow-2xl p-2.5 z-40 space-y-1.5 font-sans animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 px-1">
+              <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wide">Map Layers</span>
+              <span className="text-[10px] text-zinc-500 font-mono tabular-nums">
+                {[showHeatmap, showTrajectories, showPointCloud, show5GLinks].filter(Boolean).length} Active
+              </span>
+            </div>
+
+            {/* Layer Toggles List */}
+            <div className="space-y-1 pt-1">
+              {/* Heatmap Toggle */}
+              <button
+                id="toggle-dropdown-heatmap"
+                onClick={() => setShowHeatmap(!showHeatmap)}
+                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
+                  showHeatmap
+                    ? 'bg-zinc-900/90 border-amber-500/60 text-amber-300 font-semibold'
+                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Scan className={`w-3.5 h-3.5 ${showHeatmap ? 'text-amber-400' : 'text-zinc-500'}`} />
+                  <span>Area Density Heatmap</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-mono tabular-nums px-1 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-700/60">
+                    {coverageMetrics.overallPercent}%
+                  </span>
+                  <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${showHeatmap ? 'bg-amber-500 border-amber-400' : 'border-zinc-700'}`}>
+                    {showHeatmap && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
+                  </div>
+                </div>
+              </button>
+
+              {/* Trajectories Toggle */}
+              <button
+                id="toggle-dropdown-trajectories"
+                onClick={() => setShowTrajectories(!showTrajectories)}
+                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
+                  showTrajectories
+                    ? 'bg-zinc-900/90 border-cyan-500/60 text-cyan-300 font-semibold'
+                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Compass className={`w-3.5 h-3.5 ${showTrajectories ? 'text-cyan-400' : 'text-zinc-500'}`} />
+                  <span>AAV Trajectories</span>
+                </div>
+                <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${showTrajectories ? 'bg-cyan-500 border-cyan-400' : 'border-zinc-700'}`}>
+                  {showTrajectories && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
+                </div>
+              </button>
+
+              {/* Point Cloud Toggle */}
+              <button
+                id="toggle-dropdown-pointcloud"
+                onClick={() => setShowPointCloud(!showPointCloud)}
+                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
+                  showPointCloud
+                    ? 'bg-zinc-900/90 border-cyan-500/60 text-cyan-300 font-semibold'
+                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Radio className={`w-3.5 h-3.5 ${showPointCloud ? 'text-cyan-400' : 'text-zinc-500'}`} />
+                  <span>3D SLAM Point Cloud</span>
+                </div>
+                <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${showPointCloud ? 'bg-cyan-500 border-cyan-400' : 'border-zinc-700'}`}>
+                  {showPointCloud && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
+                </div>
+              </button>
+
+              {/* 5G Links Toggle */}
+              <button
+                id="toggle-dropdown-5glinks"
+                onClick={() => setShow5GLinks(!show5GLinks)}
+                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
+                  show5GLinks
+                    ? 'bg-zinc-900/90 border-cyan-500/60 text-cyan-300 font-semibold'
+                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Wifi className={`w-3.5 h-3.5 ${show5GLinks ? 'text-cyan-400' : 'text-zinc-500'}`} />
+                  <span>5G RF Mesh Links</span>
+                </div>
+                <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${show5GLinks ? 'bg-cyan-500 border-cyan-400' : 'border-zinc-700'}`}>
+                  {show5GLinks && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Top Right: Thinner Camera View Selector & Fullscreen */}
       <div className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 bg-black/90 backdrop-blur-md p-0.5 rounded-xs border border-zinc-800 text-[10px] shadow-lg">
         <button
@@ -1604,111 +1727,53 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
         )}
       </div>
 
-      {/* Bottom HUD: Layer Toggles & Tactical Map Legends (Unified Collision-Proof Layout) */}
-      <div className="absolute bottom-3 left-3 right-3 z-10 pointer-events-none flex flex-col xl:flex-row items-start xl:items-end justify-between gap-2.5">
-        {/* Left / Bottom-pinned: Layer Toggles */}
-        <div className="order-2 xl:order-1 pointer-events-auto flex flex-wrap items-center gap-1.5 bg-black/90 backdrop-blur-md p-1.5 rounded-sm border border-zinc-800 text-[11px] font-mono shadow-lg max-w-full">
-          <span className="text-zinc-400 px-1 font-semibold flex items-center gap-1 shrink-0">
-            <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            LAYERS:
-          </span>
-          <button
-            id="toggle-heatmap"
-            onClick={() => setShowHeatmap(!showHeatmap)}
-            className={`px-2 py-1 rounded-xs border transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 ${
-              showHeatmap
-                ? 'bg-zinc-900 border-amber-500/80 text-amber-300 font-semibold shadow-[0_0_8px_rgba(245,158,11,0.25)]'
-                : 'border-zinc-800 text-zinc-500 hover:bg-zinc-900/50'
-            }`}
-            title="Toggle Area Explored Density Heatmap on Terrain"
-          >
-            <Scan className="w-3 h-3 text-amber-400" />
-            <span>HEATMAP</span>
-            <span className="text-[9px] px-1 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-700/60 font-bold">
-              {coverageMetrics.overallPercent}%
-            </span>
-          </button>
-          <button
-            id="toggle-trajectories"
-            onClick={() => setShowTrajectories(!showTrajectories)}
-            className={`px-2 py-1 rounded-xs border transition-colors cursor-pointer shrink-0 ${
-              showTrajectories
-                ? 'bg-zinc-900 border-cyan-500/70 text-cyan-300 font-semibold'
-                : 'border-zinc-800 text-zinc-500 hover:bg-zinc-900/50'
-            }`}
-          >
-            TRAJECTORIES
-          </button>
-          <button
-            id="toggle-pointcloud"
-            onClick={() => setShowPointCloud(!showPointCloud)}
-            className={`px-2 py-1 rounded-xs border transition-colors cursor-pointer shrink-0 ${
-              showPointCloud
-                ? 'bg-zinc-900 border-cyan-500/70 text-cyan-300 font-semibold'
-                : 'border-zinc-800 text-zinc-500 hover:bg-zinc-900/50'
-            }`}
-            title="Toggle 3D SLAM Point Cloud & Unified Map"
-          >
-            POINT CLOUD
-          </button>
-          <button
-            id="toggle-5glinks"
-            onClick={() => setShow5GLinks(!show5GLinks)}
-            className={`px-2 py-1 rounded-xs border transition-colors cursor-pointer shrink-0 ${
-              show5GLinks
-                ? 'bg-zinc-900 border-cyan-500/70 text-cyan-300 font-semibold'
-                : 'border-zinc-800 text-zinc-500 hover:bg-zinc-900/50'
-            }`}
-            title="Toggle 5G MEC Wireless Beams"
-          >
-            5G LINKS
-          </button>
+      {/* Bottom HUD: Tactical Map Legends & System Notices */}
+      <div className="absolute bottom-3 left-3 right-3 z-10 pointer-events-none flex flex-wrap items-end justify-between gap-2.5">
+        {/* Left: Map Legend (Agent Colors & Heatmap Scale) */}
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 max-w-full">
+          {showHeatmap && (
+            <div className="bg-black/90 backdrop-blur-md px-2.5 py-1.5 rounded-sm border border-amber-900/60 text-[10px] font-mono flex items-center gap-2 text-zinc-300 shadow-lg shrink-0">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              <span className="text-amber-300 font-semibold">HEATMAP:</span>
+              <div className="flex items-center gap-1">
+                <span className="w-10 h-1.5 rounded-full bg-gradient-to-r from-cyan-500 via-emerald-400 to-amber-400" />
+                <span className="text-zinc-400 text-[9px]">(LOW → HIGH)</span>
+              </div>
+              {showCoverageGaps && coverageMetrics.gapsCount > 0 && (
+                <span className="text-amber-400 text-[9px] font-bold border-l border-zinc-800 pl-1.5">
+                  {coverageMetrics.gapsCount} GAPS
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="bg-black/90 backdrop-blur-md px-2.5 py-1.5 rounded-sm border border-zinc-800 text-[10px] font-mono flex flex-wrap items-center gap-2.5 sm:gap-3 text-zinc-300 shadow-lg shrink-0">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-sky-400" />
+              <span>AAV-01 <span className="text-zinc-500 hidden sm:inline">(Alpha)</span></span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+              <span>AAV-02 <span className="text-zinc-500 hidden sm:inline">(Bravo)</span></span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+              <span>AAV-03 <span className="text-zinc-500 hidden sm:inline">(Charlie)</span></span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-ping" />
+              <span className="text-yellow-300">Shared Match</span>
+            </div>
+          </div>
         </div>
 
-        {/* Right / Top-stacked: Map Legend & System Notices */}
-        <div className="order-1 xl:order-2 pointer-events-auto flex flex-col items-start xl:items-end gap-1.5 shrink-0 max-w-full">
+        {/* Right: Fusion Status Notice */}
+        <div className="pointer-events-auto flex flex-col items-end gap-1.5 shrink-0">
           {simState.collabSlam.fusionStage === 'GLOBAL_FUSED' && (
             <div className="bg-emerald-950/90 border border-emerald-500/70 text-emerald-300 text-xs px-2.5 py-1 rounded-sm font-mono flex items-center gap-2 shadow-lg backdrop-blur-md">
               <span>UNIFIED 3D GLOBAL MAP ACTIVE ({simState.fusedPointCloud.length.toLocaleString()} POINTS)</span>
             </div>
           )}
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {showHeatmap && (
-              <div className="bg-black/90 backdrop-blur-md px-2.5 py-1.5 rounded-sm border border-amber-900/60 text-[10px] font-mono flex items-center gap-2 text-zinc-300 shadow-lg shrink-0">
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
-                <span className="text-amber-300 font-semibold">HEATMAP:</span>
-                <div className="flex items-center gap-1">
-                  <span className="w-10 h-1.5 rounded-full bg-gradient-to-r from-cyan-500 via-emerald-400 to-amber-400" />
-                  <span className="text-zinc-400 text-[9px]">(LOW → HIGH)</span>
-                </div>
-                {showCoverageGaps && coverageMetrics.gapsCount > 0 && (
-                  <span className="text-amber-400 text-[9px] font-bold border-l border-zinc-800 pl-1.5">
-                    {coverageMetrics.gapsCount} GAPS
-                  </span>
-                )}
-              </div>
-            )}
-
-            <div className="bg-black/90 backdrop-blur-md px-2.5 py-1.5 rounded-sm border border-zinc-800 text-[10px] font-mono flex flex-wrap items-center gap-2.5 sm:gap-3 text-zinc-300 shadow-lg shrink-0">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-sky-400" />
-                <span>AAV-01 <span className="text-zinc-500 hidden sm:inline">(Alpha)</span></span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
-                <span>AAV-02 <span className="text-zinc-500 hidden sm:inline">(Bravo)</span></span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                <span>AAV-03 <span className="text-zinc-500 hidden sm:inline">(Charlie)</span></span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-ping" />
-                <span className="text-yellow-300">Shared Match</span>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
