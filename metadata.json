@@ -1,0 +1,6 @@
+{
+  "name": "VYOM",
+  "description": "Tactical digital simulation and command-center platform for collaborative AAV Visual-SLAM over 5G and MEC map fusion.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

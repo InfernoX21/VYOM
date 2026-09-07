@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:root {
+  --font-ui: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-telemetry: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    background-color: #000000;
+    color: #f4f4f5;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Reusable Typography System Utility Classes */
+.font-sans {
+  font-family: var(--font-ui);
+}
+
+.font-mono {
+  font-family: var(--font-telemetry);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-telemetry {
+  font-family: var(--font-telemetry);
+  font-variant-numeric: tabular-nums;
+}
+
+.text-title {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.text-heading {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: normal;
+}
+
+.text-subheading {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  letter-spacing: normal;
+}
+
+.text-body {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.text-label {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  letter-spacing: normal;
+}
+
+.text-caption {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.text-metric {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: normal;
+}
+
+/* Tactical OLED Black Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
