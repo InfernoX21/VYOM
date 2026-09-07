@@ -57,7 +57,7 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
   };
 
   return (
-    <header className="w-full bg-black border-b border-zinc-800 text-zinc-100 px-4 py-2.5 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3 shadow-md select-none font-sans">
+    <header className="w-full bg-black border-b border-zinc-800 text-zinc-100 px-4 py-1.5 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-2 shadow-md select-none font-sans">
       {/* Brand & Mission Status */}
       <div className="flex items-center gap-3.5">
         <div className="flex items-center gap-2.5">
@@ -76,13 +76,7 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
               Simulation
             </span>
           </div>
-          <p className="text-[11px] font-sans text-zinc-400 flex items-center gap-2 mt-0.5">
-            <span>Surveillance & Reconnaissance</span>
-            <span className="text-zinc-600">•</span>
-            <span className="text-cyan-400">COVINS Multi-Agent Framework</span>
-            <span className="text-zinc-600">•</span>
-            <span>Edge Fusion Node</span>
-          </p>
+
         </div>
       </div>
 
