@@ -200,6 +200,30 @@ export interface Building3D {
   sector: 'Alpha' | 'Bravo' | 'Charlie' | 'Neutral';
 }
 
+export type ScenarioEnvironment = 'URBAN_DISASTER' | 'WILDLAND_SEARCH' | 'CRITICAL_INFRASTRUCTURE';
+
+export interface ScenarioPointOfInterest {
+  id: string;
+  label: string;
+  kind: 'SURVIVOR' | 'CAMP' | 'ANOMALY' | 'BREACH' | 'INSPECTION';
+  position: Vector3D;
+  assignedAgent: string;
+}
+
+export interface ScenarioEventDefinition {
+  atSeconds: number;
+  type: MissionEvent['type'];
+  message: string;
+  agentId?: string;
+}
+
+export interface ScenarioTelemetryProfile {
+  latencyMs: number;
+  throughputMbps: number;
+  signalDbm: number;
+  featureDensity: number;
+}
+
 export interface Scenario {
   id: 'urban_disaster' | 'search_rescue' | 'infrastructure_inspection';
   name: string;
@@ -209,4 +233,12 @@ export interface Scenario {
   sectors: SectorDefinition[];
   buildings: Building3D[];
   groundRadius: number;
+  environment: ScenarioEnvironment;
+  missionObjective: string;
+  operationLabel: string;
+  spawnPositions: Record<string, Vector3D>;
+  aavRoutes: Record<string, Vector3D[]>;
+  pointsOfInterest: ScenarioPointOfInterest[];
+  scriptedEvents: ScenarioEventDefinition[];
+  telemetry: ScenarioTelemetryProfile;
 }

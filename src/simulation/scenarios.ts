@@ -8,6 +8,28 @@ export const SCENARIOS: Record<string, Scenario> = {
     threatLevel: 'TACTICAL_ADVISORY',
     initialZoom: 45,
     groundRadius: 180,
+    environment: 'URBAN_DISASTER',
+    operationLabel: 'Disaster-zone reconstruction',
+    missionObjective: 'Map blocked streets and damaged structures to deliver one shared 3D disaster reconstruction.',
+    spawnPositions: {
+      'AAV-01': { x: -12, y: -118, z: 0 },
+      'AAV-02': { x: 0, y: -118, z: 0 },
+      'AAV-03': { x: 12, y: -118, z: 0 },
+    },
+    aavRoutes: {
+      'AAV-01': [{ x: -65, y: 55, z: 42 }, { x: -92, y: 72, z: 42 }, { x: -48, y: 83, z: 42 }, { x: -42, y: 35, z: 42 }, { x: -78, y: 28, z: 42 }],
+      'AAV-02': [{ x: 70, y: 45, z: 38 }, { x: 95, y: 68, z: 38 }, { x: 43, y: 75, z: 38 }, { x: 42, y: 28, z: 38 }, { x: 88, y: 22, z: 38 }],
+      'AAV-03': [{ x: 0, y: -75, z: 45 }, { x: -30, y: -55, z: 45 }, { x: 31, y: -54, z: 45 }, { x: 34, y: -96, z: 45 }, { x: -33, y: -99, z: 45 }],
+    },
+    pointsOfInterest: [
+      { id: 'urban-blockage', label: 'Blocked evacuation corridor', kind: 'ANOMALY', position: { x: -75, y: 35, z: 3 }, assignedAgent: 'AAV-01' },
+      { id: 'urban-collapse', label: 'Collapsed loading bay', kind: 'INSPECTION', position: { x: 80, y: 25, z: 3 }, assignedAgent: 'AAV-02' },
+    ],
+    scriptedEvents: [
+      { atSeconds: 16, type: 'SLAM', message: 'Shared landmark detected at the Alpha / Bravo street intersection.' },
+      { atSeconds: 28, type: 'WARN', message: 'AAV-01 marked a blocked evacuation corridor for reconstruction review.', agentId: 'AAV-01' },
+    ],
+    telemetry: { latencyMs: 18, throughputMbps: 24.6, signalDbm: -68, featureDensity: 1.15 },
     sectors: [
       {
         id: 'Alpha',
@@ -76,6 +98,30 @@ export const SCENARIOS: Record<string, Scenario> = {
     threatLevel: 'DEFCON 4',
     initialZoom: 50,
     groundRadius: 200,
+    environment: 'WILDLAND_SEARCH',
+    operationLabel: 'Wildland search grid',
+    missionObjective: 'Sweep trails, tree cover and camp approaches to locate missing-person targets and share their coordinates.',
+    spawnPositions: {
+      'AAV-01': { x: -18, y: -130, z: 0 },
+      'AAV-02': { x: 0, y: -130, z: 0 },
+      'AAV-03': { x: 18, y: -130, z: 0 },
+    },
+    aavRoutes: {
+      'AAV-01': [{ x: -70, y: 50, z: 55 }, { x: -108, y: 78, z: 58 }, { x: -44, y: 96, z: 52 }, { x: -30, y: 38, z: 50 }, { x: -85, y: 20, z: 56 }],
+      'AAV-02': [{ x: 65, y: 55, z: 50 }, { x: 105, y: 83, z: 54 }, { x: 116, y: 30, z: 48 }, { x: 54, y: 12, z: 52 }, { x: 32, y: 74, z: 50 }],
+      'AAV-03': [{ x: 5, y: -70, z: 48 }, { x: -42, y: -48, z: 50 }, { x: -18, y: -108, z: 48 }, { x: 45, y: -108, z: 52 }, { x: 52, y: -48, z: 50 }],
+    },
+    pointsOfInterest: [
+      { id: 'sar-target-1', label: 'Thermal target near ridge trail', kind: 'SURVIVOR', position: { x: -88, y: 68, z: 0 }, assignedAgent: 'AAV-01' },
+      { id: 'sar-camp', label: 'Temporary campsite', kind: 'CAMP', position: { x: 8, y: -70, z: 0 }, assignedAgent: 'AAV-03' },
+      { id: 'sar-target-2', label: 'Reflective target in canyon', kind: 'SURVIVOR', position: { x: 92, y: 38, z: 0 }, assignedAgent: 'AAV-02' },
+    ],
+    scriptedEvents: [
+      { atSeconds: 15, type: 'WARN', message: 'Thermal target detected near ridge trail; coordinates shared with AAV-01.', agentId: 'AAV-01' },
+      { atSeconds: 24, type: 'INFO', message: 'AAV-01 redirected to inspect the ridge target; search grid remains covered.' },
+      { atSeconds: 34, type: 'SUCCESS', message: 'Canyon search sector complete; second point of interest handed to ground team.', agentId: 'AAV-02' },
+    ],
+    telemetry: { latencyMs: 31, throughputMbps: 16.8, signalDbm: -76, featureDensity: 0.72 },
     sectors: [
       {
         id: 'Alpha',
@@ -126,6 +172,30 @@ export const SCENARIOS: Record<string, Scenario> = {
     threatLevel: 'DEFCON 3',
     initialZoom: 45,
     groundRadius: 180,
+    environment: 'CRITICAL_INFRASTRUCTURE',
+    operationLabel: 'Perimeter surveillance patrol',
+    missionObjective: 'Inspect substation assets, perimeter corridors and restricted zones for anomalies and unauthorized activity.',
+    spawnPositions: {
+      'AAV-01': { x: -14, y: -115, z: 0 },
+      'AAV-02': { x: 0, y: -115, z: 0 },
+      'AAV-03': { x: 14, y: -115, z: 0 },
+    },
+    aavRoutes: {
+      'AAV-01': [{ x: -60, y: 60, z: 44 }, { x: -98, y: 82, z: 44 }, { x: -102, y: 32, z: 44 }, { x: -48, y: 25, z: 44 }, { x: -32, y: 77, z: 44 }],
+      'AAV-02': [{ x: 65, y: 45, z: 40 }, { x: 105, y: 76, z: 40 }, { x: 105, y: 12, z: 40 }, { x: 42, y: 10, z: 40 }, { x: 35, y: 76, z: 40 }],
+      'AAV-03': [{ x: -5, y: -72, z: 46 }, { x: -55, y: -105, z: 46 }, { x: 52, y: -105, z: 46 }, { x: 64, y: -42, z: 46 }, { x: -58, y: -42, z: 46 }],
+    },
+    pointsOfInterest: [
+      { id: 'infra-transformer', label: 'Transformer thermal anomaly', kind: 'ANOMALY', position: { x: -58, y: 55, z: 8 }, assignedAgent: 'AAV-01' },
+      { id: 'infra-breach', label: 'Perimeter breach', kind: 'BREACH', position: { x: 88, y: 12, z: 0 }, assignedAgent: 'AAV-02' },
+      { id: 'infra-pipeline', label: 'Pipeline inspection point', kind: 'INSPECTION', position: { x: 28, y: -78, z: 2 }, assignedAgent: 'AAV-03' },
+    ],
+    scriptedEvents: [
+      { atSeconds: 14, type: 'WARN', message: 'Perimeter breach detected on the east access road; AAV-02 redirected for inspection.', agentId: 'AAV-02' },
+      { atSeconds: 25, type: 'WARN', message: 'Transformer thermal anomaly exceeds surveillance threshold.', agentId: 'AAV-01' },
+      { atSeconds: 36, type: 'SUCCESS', message: 'Restricted-zone inspection complete; edge node published updated situational map.', agentId: 'AAV-03' },
+    ],
+    telemetry: { latencyMs: 14, throughputMbps: 28.4, signalDbm: -61, featureDensity: 1.3 },
     sectors: [
       {
         id: 'Alpha',

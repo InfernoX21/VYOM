@@ -546,6 +546,21 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
         scene.add(label);
       }
 
+      // Scenario-specific mission points make search and surveillance activity legible.
+      for (const poi of scen.pointsOfInterest) {
+        const color = poi.kind === 'SURVIVOR' ? HEX.success : poi.kind === 'BREACH' || poi.kind === 'ANOMALY' ? HEX.danger : HEX.primary;
+        const marker = new THREE.Mesh(
+          new THREE.ConeGeometry(2.2, 6, 4),
+          new THREE.MeshBasicMaterial({ color })
+        );
+        marker.position.set(poi.position.x, 3, -poi.position.y);
+        marker.rotation.y = Math.PI / 4;
+        scene.add(marker);
+        const poiLabel = makeLabel(poi.label, '#d8dde4', 18);
+        poiLabel.position.set(poi.position.x, 8, -poi.position.y);
+        scene.add(poiLabel);
+      }
+
       // Structures: solid dark volumes with a single edge highlight.
       const structureMat = new THREE.MeshStandardMaterial({
         color: HEX.building,
@@ -600,6 +615,34 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
           );
           light.position.set(b.x + b.width * 0.3, b.height + 3.4, -b.y + b.depth * 0.3);
           scene.add(light);
+        }
+      }
+
+      if (scen.environment === 'WILDLAND_SEARCH') {
+        const vegetationMat = new THREE.MeshStandardMaterial({ color: 0x25382a, roughness: 1 });
+        for (let x = -150; x <= 150; x += 22) {
+          for (let y = -130; y <= 120; y += 19) {
+            const offset = ((x * 13 + y * 7) % 11) - 5;
+            const treeHeight = 12 + Math.abs(offset);
+            const tree = new THREE.Mesh(new THREE.ConeGeometry(3.5, treeHeight, 7), vegetationMat);
+            tree.position.set(x + offset, treeHeight / 2, -(y - offset));
+            scene.add(tree);
+          }
+        }
+      } else if (scen.environment === 'CRITICAL_INFRASTRUCTURE') {
+        const fenceMat = new THREE.LineBasicMaterial({ color: HEX.lineStrong, transparent: true, opacity: 0.75 });
+        const fence = new THREE.LineLoop(
+          new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-115, 1, -95), new THREE.Vector3(115, 1, -95),
+            new THREE.Vector3(115, 1, 95), new THREE.Vector3(-115, 1, 95),
+          ]),
+          fenceMat
+        );
+        scene.add(fence);
+        for (let x = -110; x <= 110; x += 20) {
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 5, 6), new THREE.MeshBasicMaterial({ color: HEX.lineStrong }));
+          post.position.set(x, 2.5, -95);
+          scene.add(post);
         }
       }
 

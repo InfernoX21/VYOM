@@ -80,6 +80,16 @@ export default function App() {
       {/* Main workspace: the 3D view stays dominant, telemetry sits in a fixed rail. */}
       <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 lg:flex-row lg:overflow-hidden">
         <div className="flex min-h-[380px] flex-[3] flex-col gap-2 overflow-hidden">
+          <section className="flex shrink-0 items-center justify-between gap-4 border border-line bg-surface-1 px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-3xs font-medium text-ink-3">Mission objective</div>
+              <div className="truncate text-2xs font-medium text-ink">{engine.getScenario().missionObjective}</div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className="text-3xs text-ink-3">Operation</div>
+              <div className="text-2xs font-semibold text-primary-ink">{engine.getScenario().operationLabel}</div>
+            </div>
+          </section>
           <div className="panel min-h-0 flex-1 overflow-hidden bg-surface-0">
             <Global3DMap
               simState={simState}

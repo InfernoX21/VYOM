@@ -61,6 +61,8 @@ export class SimulationEngine {
   private returningStartedAtSeconds: number | null = null;
   /** Agent positions when RTL initiated. */
   private rtlStartPositions: Record<string, Vector3D> = {};
+  /** Scenario events are emitted once, at their configured simulation time. */
+  private triggeredScenarioEvents = new Set<number>();
 
   constructor(initialScenarioId: string = 'urban_disaster') {
     this.scenario = SCENARIOS[initialScenarioId] || SCENARIOS.urban_disaster;
@@ -98,6 +100,7 @@ export class SimulationEngine {
     this.fusedAtSeconds = null;
     this.returningStartedAtSeconds = null;
     this.rtlStartPositions = {};
+    this.triggeredScenarioEvents.clear();
     this.addEvent('INFO', `Scenario switched to ${this.scenario.name}`);
     this.notify();
   }
@@ -117,7 +120,8 @@ export class SimulationEngine {
 
     if (this.state.missionStatus === 'IDLE') {
       this.state.missionStatus = 'DEPLOYING';
-      this.addEvent('INFO', 'Mission started: three AAVs departing the launch pad for their assigned sectors');
+      this.addEvent('INFO', `Mission started: ${this.scenario.operationLabel.toLowerCase()} underway.`);
+      this.addEvent('INFO', `Objective: ${this.scenario.missionObjective}`);
       this.addEvent('NETWORK', '5G URLLC bearer established with the edge node (base station 01)');
       this.addEvent('MEC', 'Collaborative SLAM server ready on the edge node');
     } else if (this.state.missionStatus === 'PAUSED') {
@@ -161,6 +165,7 @@ export class SimulationEngine {
     this.fusedAtSeconds = null;
     this.returningStartedAtSeconds = null;
     this.rtlStartPositions = {};
+    this.triggeredScenarioEvents.clear();
     this.addEvent('INFO', 'Simulation reset to launch staging');
     this.notify();
   }
@@ -322,6 +327,16 @@ export class SimulationEngine {
       },
     };
 
+    for (const [id, agent] of Object.entries(agents)) {
+      const spawn = this.scenario.spawnPositions[id];
+      if (spawn) {
+        agent.position = { ...spawn };
+        agent.trajectory = [{ ...spawn }];
+      }
+    }
+
+    const telemetry = this.scenario.telemetry;
+
     return {
       missionStatus: 'IDLE',
       isRunning: false,
@@ -333,11 +348,11 @@ export class SimulationEngine {
       landmarks: [],
       keyframes: [],
       network: {
-        latencyMs: 18,
-        throughputMbps: 24.6,
+        latencyMs: telemetry.latencyMs,
+        throughputMbps: telemetry.throughputMbps,
         packetLossPercent: 0.2,
         jitterMs: 2.1,
-        signalQualityDbm: -68,
+        signalQualityDbm: telemetry.signalDbm,
         sinrDb: 22.4,
         connectedAgents: 3,
         sliceType: '5G URLLC + eMBB',
@@ -348,7 +363,7 @@ export class SimulationEngine {
           const timestamp = -59 + i;
           // Normal URLLC baseline between 16 and 22 ms with 1-2 minor 25-28ms transients
           const isMinorJitter = i === 18 || i === 42;
-          const latency = isMinorJitter ? 27 : Math.round(17 + Math.sin(i * 0.3) * 2.2 + (Math.random() * 2 - 1));
+          const latency = isMinorJitter ? telemetry.latencyMs + 8 : Math.round(telemetry.latencyMs + Math.sin(i * 0.3) * 2.2 + (Math.random() * 2 - 1));
           return {
             timestamp,
             latencyMs: latency,
@@ -356,8 +371,8 @@ export class SimulationEngine {
           };
         }),
         spikeCountLast60s: 0,
-        maxLatencyLast60s: 27,
-        p95LatencyLast60s: 21,
+        maxLatencyLast60s: telemetry.latencyMs + 8,
+        p95LatencyLast60s: telemetry.latencyMs + 3,
       },
       mec: {
         status: 'ONLINE',
@@ -404,13 +419,13 @@ export class SimulationEngine {
           id: 'ev_init_1',
           timestamp: '00:00:00',
           type: 'INFO',
-          message: 'Command centre ready. Three AAVs staged on the launch pad.',
+          message: `Command centre ready. ${this.scenario.operationLabel} staged with three AAVs.`,
         },
         {
           id: 'ev_init_2',
           timestamp: '00:00:01',
           type: 'NETWORK',
-          message: '5G core reachable. URLLC priority slice allocated for telemetry and submaps.',
+          message: `5G core reachable. Nominal scenario latency profile: ${this.scenario.telemetry.latencyMs} ms.`,
         },
       ],
       fusedPointCloud: [],
@@ -472,6 +487,9 @@ export class SimulationEngine {
     // 4. 5G Network Simulation
     this.updateNetworkSimulation(t, dt);
 
+    // Scenario-specific detections and operational events.
+    this.updateScenarioEvents(t);
+
     // 5. MEC Computation Simulation
     this.updateMECSimulation(t, dt);
 
@@ -508,16 +526,12 @@ export class SimulationEngine {
     }
 
     const targetAltitudes = { 'AAV-01': 42, 'AAV-02': 38, 'AAV-03': 45 };
-    const launchPadBays: Record<string, { x: number; y: number }> = {
-      'AAV-01': { x: -3.8, y: -12 },
-      'AAV-02': { x: 0, y: -12 },
-      'AAV-03': { x: 3.8, y: -12 },
-    };
-    const sectorEntryWaypoints: Record<string, { x: number; y: number }> = {
-      'AAV-01': { x: -65, y: 55 },
-      'AAV-02': { x: 70, y: 45 },
-      'AAV-03': { x: 0, y: -75 },
-    };
+    const launchPadBays: Record<string, { x: number; y: number }> = Object.fromEntries(
+      Object.entries(this.scenario.spawnPositions).map(([id, position]) => [id, position])
+    );
+    const sectorEntryWaypoints: Record<string, { x: number; y: number }> = Object.fromEntries(
+      Object.entries(this.scenario.aavRoutes).map(([id, route]) => [id, route[0]])
+    );
 
     // --- PHASE 4: Return-To-Launch (RTL) autonomous flight back to launch pad ---
     if (this.state.missionStatus === 'RETURNING') {
@@ -649,40 +663,18 @@ export class SimulationEngine {
           agent.orientation.roll = Math.sin(t * 2) * 1.2;
         }
       } else {
-        // --- PHASE 3: Operational Survey Trajectories (Dynamic 100% Sector Sweeping) ---
+        // --- PHASE 3: Scenario-defined operational routes ---
         const surveyT = t - 12.0;
-
-        // Dynamic expanding sweep bounds (radius modulation & pattern rotation)
-        const rSweep = 12 + Math.sin(surveyT * 0.14) * 14 + Math.min(8, surveyT * 0.1);
-        const rotAngle = surveyT * 0.06;
-
-        let cx = 0, cy = 0, baseRx = 24, baseRy = 20, omega = 0.14, phase = 0;
-        if (id === 'AAV-01') {
-          // Sector Alpha: Commercial Core
-          cx = -62; cy = 52; baseRx = 20; baseRy = 18; omega = 0.14; phase = 0.4;
-          agent.speed = 8.4 + Math.sin(t * 0.8) * 0.5;
-        } else if (id === 'AAV-02') {
-          // Sector Bravo: Logistics Hub
-          cx = 68; cy = 46; baseRx = 18; baseRy = 20; omega = 0.13; phase = 1.8;
-          agent.speed = 7.9 + Math.cos(t * 0.7) * 0.6;
-        } else if (id === 'AAV-03') {
-          // Sector Charlie: Forward Perimeter
-          cx = 0; cy = -72; baseRx = 22; baseRy = 18; omega = 0.15; phase = 3.2;
-          agent.speed = 8.8 + Math.sin(t * 0.9) * 0.4;
-        }
-
-        const overlapBias = Math.sin(t * 0.08) * 12;
-
-        const rx = baseRx + rSweep * 0.4;
-        const ry = baseRy + rSweep * 0.4;
-        const localX = Math.sin(t * omega + phase) * rx + (id === 'AAV-01' ? overlapBias : -overlapBias * 0.5);
-        const localY = Math.sin(2 * (t * omega + phase)) * ry;
-
-        const rotatedX = localX * Math.cos(rotAngle) - localY * Math.sin(rotAngle);
-        const rotatedY = localX * Math.sin(rotAngle) + localY * Math.cos(rotAngle);
-
-        const nextX = cx + rotatedX;
-        const nextY = cy + rotatedY;
+        const route = this.scenario.aavRoutes[id] ?? [];
+        const routeProgress = (surveyT * 0.11 + (id === 'AAV-01' ? 0 : id === 'AAV-02' ? 0.24 : 0.48)) % route.length;
+        const segment = Math.floor(routeProgress);
+        const segmentProgress = routeProgress - segment;
+        const start = route[segment] ?? agent.position;
+        const end = route[(segment + 1) % route.length] ?? start;
+        const smooth = segmentProgress * segmentProgress * (3 - 2 * segmentProgress);
+        const nextX = start.x + (end.x - start.x) * smooth;
+        const nextY = start.y + (end.y - start.y) * smooth;
+        agent.speed = 8.1 + Math.sin(t * 0.8 + segment) * 0.55;
 
         const prevX = agent.position.x;
         const prevY = agent.position.y;
@@ -690,7 +682,7 @@ export class SimulationEngine {
 
         agent.position.x = nextX;
         agent.position.y = nextY;
-        agent.altitude = targetAlt + Math.sin(t * 1.1 + id.charCodeAt(4)) * 0.4;
+        agent.altitude = (start.z || targetAlt) + Math.sin(t * 1.1 + id.charCodeAt(4)) * 0.4;
         agent.position.z = agent.altitude;
 
         const vx = nextX - prevX;
@@ -727,7 +719,9 @@ export class SimulationEngine {
 
     for (const [id, agent] of Object.entries(this.state.agents)) {
       // Feature tracking counts
-      agent.featuresTrackedPerFrame = Math.round(280 + Math.sin(t * 2 + id.charCodeAt(4)) * 60);
+      agent.featuresTrackedPerFrame = Math.round(
+        (280 + Math.sin(t * 2 + id.charCodeAt(4)) * 60) * this.scenario.telemetry.featureDensity
+      );
 
       // Keyframes creation rate (~1 keyframe every 0.6 sec of motion)
       if (Math.random() < dt * 1.8) {
@@ -747,7 +741,10 @@ export class SimulationEngine {
         }
 
         // Generate 3D visual landmarks near current building / ground location
-        const landmarkBatchCount = Math.floor(4 + Math.random() * 5);
+        const landmarkBatchCount = Math.max(
+          2,
+          Math.floor((4 + Math.random() * 5) * this.scenario.telemetry.featureDensity)
+        );
         agent.landmarksCount += landmarkBatchCount;
 
         for (let i = 0; i < landmarkBatchCount; i++) {
@@ -795,6 +792,7 @@ export class SimulationEngine {
   private updateNetworkSimulation(t: number, dt: number) {
     const net = this.state.network;
     const isStressed = this.state.isStressTest;
+    const profile = this.scenario.telemetry;
 
     // Normal 5G metrics vs Stressed metrics
     if (isStressed) {
@@ -810,11 +808,11 @@ export class SimulationEngine {
     } else {
       // Occasional minor network transient spike (~1-2% chance)
       const minorGlitch = Math.random() < 0.015 ? 12 : 0;
-      net.latencyMs = Math.round(17.5 + Math.sin(t * 1.2) * 2.2 + minorGlitch + (Math.random() * 1.5 - 0.7));
-      net.throughputMbps = Number((24.6 + Math.sin(t * 0.8) * 1.8 + Math.random() * 0.8).toFixed(1));
+      net.latencyMs = Math.round(profile.latencyMs + Math.sin(t * 1.2) * 2.2 + minorGlitch + (Math.random() * 1.5 - 0.7));
+      net.throughputMbps = Number((profile.throughputMbps + Math.sin(t * 0.8) * 1.8 + Math.random() * 0.8).toFixed(1));
       net.packetLossPercent = Number((0.25 + Math.sin(t) * 0.08).toFixed(2));
       net.jitterMs = Number((2.1 + Math.sin(t * 2.5) * 0.4).toFixed(1));
-      net.signalQualityDbm = Math.round(-68 + Math.sin(t * 0.5) * 3);
+      net.signalQualityDbm = Math.round(profile.signalDbm + Math.sin(t * 0.5) * 3);
       net.sinrDb = Number((22.4 + Math.sin(t * 0.4) * 1.2).toFixed(1));
     }
 
@@ -854,6 +852,15 @@ export class SimulationEngine {
       agent.rsrpDbm = net.signalQualityDbm + (id === 'AAV-01' ? 2 : id === 'AAV-02' ? -1 : 1);
       agent.localPacketsSent += Math.floor(dt * 40);
     }
+  }
+
+  private updateScenarioEvents(t: number) {
+    this.scenario.scriptedEvents.forEach((event, index) => {
+      if (t >= event.atSeconds && !this.triggeredScenarioEvents.has(index)) {
+        this.triggeredScenarioEvents.add(index);
+        this.addEvent(event.type, event.message, event.agentId);
+      }
+    });
   }
 
   private updateMECSimulation(t: number, dt: number) {
