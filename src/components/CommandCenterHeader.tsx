@@ -2,7 +2,7 @@ import React from 'react';
 import { SimulationState } from '../simulation/simulationEngine';
 import { Scenario } from '../types/slam';
 import { SCENARIOS } from '../simulation/scenarios';
-import { Play, Pause, RotateCcw, BarChart3, BookOpen, Camera, Layers, Radio } from 'lucide-react';
+import { Play, Pause, BarChart3, BookOpen, Camera, Layers, Radio } from 'lucide-react';
 import { VyomLogo } from './VyomLogo';
 import { Button, Segmented } from './ui/Button';
 import { StatusBadge } from './ui/Panel';
@@ -73,26 +73,28 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
     : 'Fuse maps';
 
   return (
-    <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface-1 px-3 py-2">
+    <header className="flex shrink-0 items-center gap-3 border-b border-line bg-surface-1 px-3 py-1.5 overflow-x-auto">
       {/* Identity */}
-      <div className="flex shrink-0 items-center gap-2.5">
-        <VyomLogo height={22} />
-        <div className="hidden h-6 w-px bg-line sm:block" />
-        <div className="hidden leading-tight sm:block">
-          <div className="text-xs font-semibold text-ink">Collaborative SLAM</div>
+      <div className="flex shrink-0 items-center gap-2">
+        <VyomLogo height={20} />
+        <div className="h-5 w-px bg-line" />
+        <div className="leading-tight">
+          <div className="text-2xs font-semibold text-ink">Collaborative SLAM</div>
           <div className="text-3xs text-ink-3">Multi-AAV mission control</div>
         </div>
       </div>
 
+      <div className="h-5 w-px shrink-0 bg-line" />
+
       {/* Mission clock + state */}
-      <div className="flex shrink-0 items-center gap-3 rounded border border-line bg-surface-2 px-2.5 py-1">
+      <div className="flex shrink-0 items-center gap-2.5 rounded border border-line bg-surface-2 px-2 py-0.5">
         <div className="leading-tight">
           <div className="text-3xs text-ink-3">Mission time</div>
-          <div id="mission-clock" className="telemetry text-sm font-semibold text-ink">
+          <div id="mission-clock" className="telemetry text-xs font-semibold text-ink">
             {formatMissionTime(simState.simTimeSeconds)}
           </div>
         </div>
-        <div className="h-7 w-px bg-line" />
+        <div className="h-6 w-px bg-line" />
         <div className="leading-tight">
           <div className="text-3xs text-ink-3">State</div>
           <StatusBadge
@@ -106,16 +108,17 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
       </div>
 
       {/* Run controls */}
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1">
         <Button
           id={isRunning ? 'btn-pause-mission' : 'btn-start-mission'}
           variant={isRunning ? 'danger' : 'success'}
+          size="sm"
           onClick={isRunning ? onPause : onStart}
           icon={
             isRunning ? (
-              <Pause className="h-3.5 w-3.5 fill-current" />
+              <Pause className="h-3 w-3 fill-current" />
             ) : (
-              <Play className="h-3.5 w-3.5 fill-current" />
+              <Play className="h-3 w-3 fill-current" />
             )
           }
         >
@@ -123,21 +126,12 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
         </Button>
 
         <Button
-          id="btn-reset-mission"
-          variant="neutral"
-          iconOnly
-          aria-label="Reset simulation"
-          title="Reset simulation"
-          onClick={onReset}
-          icon={<RotateCcw className="h-3.5 w-3.5" />}
-        />
-
-        <Button
           id="btn-fuse-maps"
           variant="primary"
+          size="sm"
           disabled={isFused}
           onClick={onTriggerFusion}
-          icon={<Layers className="h-3.5 w-3.5" />}
+          icon={<Layers className="h-3 w-3" />}
           title={
             isFused
               ? 'Local maps are already fused into the unified map'
@@ -148,15 +142,17 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
         </Button>
       </div>
 
+      <div className="h-5 w-px shrink-0 bg-line" />
+
       {/* Scenario + rate + stress */}
-      <div className="flex min-w-0 shrink items-center gap-2">
-        <label className="flex items-center gap-1.5 text-2xs text-ink-3">
-          <span className="hidden md:inline">Scenario</span>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <label className="flex items-center gap-1 text-2xs text-ink-3">
+          Scenario
           <select
             id="scenario-selector"
             value={scenario.id}
             onChange={(e) => onSelectScenario(e.target.value)}
-            className="h-7 max-w-[190px] rounded border border-line bg-surface-2 px-2 text-2xs text-ink hover:border-line-strong focus:border-primary focus:outline-none"
+            className="h-6 max-w-[180px] rounded border border-line bg-surface-2 px-1.5 text-2xs text-ink hover:border-line-strong focus:border-primary focus:outline-none"
           >
             {Object.values(SCENARIOS).map((s) => (
               <option key={s.id} value={s.id}>
@@ -185,17 +181,20 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
         </Button>
       </div>
 
-      {/* Views */}
-      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Views — right-aligned */}
+      <div className="flex shrink-0 items-center gap-1">
         <Button
           id="btn-open-camera-modal"
           variant="neutral"
           size="sm"
           onClick={onOpenCameraFeed}
-          icon={<Camera className="h-3.5 w-3.5" />}
+          icon={<Camera className="h-3 w-3" />}
           title="Onboard camera and feature tracking"
         >
-          <span className="hidden sm:inline">Vision feed</span>
+          Vision feed
         </Button>
 
         <Button
@@ -203,10 +202,10 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
           variant="neutral"
           size="sm"
           onClick={onOpenFusionModal}
-          icon={<Radio className="h-3.5 w-3.5" />}
+          icon={<Radio className="h-3 w-3" />}
           title="Map fusion pipeline"
         >
-          <span className="hidden sm:inline">Fusion pipeline</span>
+          Fusion pipeline
         </Button>
 
         <Button
@@ -214,10 +213,10 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
           variant="neutral"
           size="sm"
           onClick={onOpenAnalytics}
-          icon={<BarChart3 className="h-3.5 w-3.5" />}
+          icon={<BarChart3 className="h-3 w-3" />}
           title="Mission analytics"
         >
-          <span className="hidden sm:inline">Analytics</span>
+          Analytics
         </Button>
 
         <Button
@@ -225,10 +224,10 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
           variant="neutral"
           size="sm"
           onClick={onOpenArchitecture}
-          icon={<BookOpen className="h-3.5 w-3.5" />}
+          icon={<BookOpen className="h-3 w-3" />}
           title="System architecture reference"
         >
-          <span className="hidden sm:inline">Architecture</span>
+          Architecture
         </Button>
       </div>
     </header>

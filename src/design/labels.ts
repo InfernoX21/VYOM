@@ -30,6 +30,7 @@ export const MISSION_STATUS_LABEL: Record<MissionStatus, string> = {
   PAUSED: 'Paused',
   FUSING: 'Fusing maps',
   FUSED: 'Maps fused',
+  RETURNING: 'Returning (RTL)',
   COMPLETE: 'Complete',
 };
 
@@ -41,6 +42,7 @@ export const MISSION_STATUS_TONE: Record<MissionStatus, Tone> = {
   PAUSED: 'danger',
   FUSING: 'warning',
   FUSED: 'success',
+  RETURNING: 'warning',
   COMPLETE: 'success',
 };
 
@@ -56,6 +58,7 @@ export const AGENT_STATUS_LABEL: Record<AgentStatus, string> = {
   MAPPING: 'Mapping',
   TRANSMITTING: 'Transmitting',
   FUSED: 'Fused',
+  RETURNING: 'Returning (RTL)',
 };
 
 export const AGENT_STATUS_TONE: Record<AgentStatus, Tone> = {
@@ -66,6 +69,7 @@ export const AGENT_STATUS_TONE: Record<AgentStatus, Tone> = {
   MAPPING: 'success',
   TRANSMITTING: 'primary',
   FUSED: 'success',
+  RETURNING: 'warning',
 };
 
 /* -------------------------------------------------------------------------- */

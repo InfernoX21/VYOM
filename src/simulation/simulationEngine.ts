@@ -57,6 +57,10 @@ export class SimulationEngine {
   private statusBeforePause: MissionStatus | null = null;
   /** Mission time at which the unified map was published. */
   private fusedAtSeconds: number | null = null;
+  /** Mission time at which RTL flight initiated. */
+  private returningStartedAtSeconds: number | null = null;
+  /** Agent positions when RTL initiated. */
+  private rtlStartPositions: Record<string, Vector3D> = {};
 
   constructor(initialScenarioId: string = 'urban_disaster') {
     this.scenario = SCENARIOS[initialScenarioId] || SCENARIOS.urban_disaster;
@@ -92,6 +96,8 @@ export class SimulationEngine {
     this.state = this.createInitialState(scenarioId);
     this.statusBeforePause = null;
     this.fusedAtSeconds = null;
+    this.returningStartedAtSeconds = null;
+    this.rtlStartPositions = {};
     this.addEvent('INFO', `Scenario switched to ${this.scenario.name}`);
     this.notify();
   }
@@ -105,6 +111,8 @@ export class SimulationEngine {
       this.state = this.createInitialState(this.scenario.id);
       this.fusedAtSeconds = null;
       this.statusBeforePause = null;
+      this.returningStartedAtSeconds = null;
+      this.rtlStartPositions = {};
     }
 
     if (this.state.missionStatus === 'IDLE') {
@@ -151,6 +159,8 @@ export class SimulationEngine {
     this.state = this.createInitialState(this.scenario.id);
     this.statusBeforePause = null;
     this.fusedAtSeconds = null;
+    this.returningStartedAtSeconds = null;
+    this.rtlStartPositions = {};
     this.addEvent('INFO', 'Simulation reset to launch staging');
     this.notify();
   }
@@ -468,12 +478,16 @@ export class SimulationEngine {
     // 6. Collaborative SLAM & Automatic Fusion Triggering
     this.updateCollaborativeSLAM(t, dt);
 
-    // 7. Mission completion: hold briefly after fusion, then stop the clock.
+    // 7. Mission completion & Return-to-Launch (RTL) trigger
     if (this.state.missionStatus === 'FUSED' && this.fusedAtSeconds !== null) {
       if (t - this.fusedAtSeconds >= CONSOLIDATION_SECONDS) {
-        this.state.missionStatus = 'COMPLETE';
-        this.addEvent('SUCCESS', 'Mission complete. Unified map archived and AAVs holding station.');
-        this.stopClock();
+        this.state.missionStatus = 'RETURNING';
+        this.returningStartedAtSeconds = t;
+        this.addEvent('SUCCESS', 'Map fusion complete & 100% sector survey achieved. Initiating Return-To-Launch (RTL).');
+        for (const agent of Object.values(this.state.agents)) {
+          agent.status = 'RETURNING';
+          this.rtlStartPositions[agent.id] = { ...agent.position };
+        }
       }
     }
 
@@ -504,6 +518,83 @@ export class SimulationEngine {
       'AAV-02': { x: 70, y: 45 },
       'AAV-03': { x: 0, y: -75 },
     };
+
+    // --- PHASE 4: Return-To-Launch (RTL) autonomous flight back to launch pad ---
+    if (this.state.missionStatus === 'RETURNING') {
+      const rtlTime = t - (this.returningStartedAtSeconds ?? t);
+      const transitDuration = 10.0; // 10 seconds total return journey
+      const flightProgress = Math.min(1.0, rtlTime / transitDuration);
+
+      let allLanded = true;
+
+      for (const [id, agent] of Object.entries(this.state.agents)) {
+        const startPos = this.rtlStartPositions[id] || agent.position;
+        const padPos = launchPadBays[id] || { x: 0, y: -12 };
+
+        // Smooth cubic step
+        const s = flightProgress * flightProgress * (3 - 2 * flightProgress);
+
+        const prevX = agent.position.x;
+        const prevY = agent.position.y;
+
+        // Horizontal transit to pad
+        const curX = startPos.x + (padPos.x - startPos.x) * Math.min(1.0, s * 1.2);
+        const curY = startPos.y + (padPos.y - startPos.y) * Math.min(1.0, s * 1.2);
+        agent.position.x = curX;
+        agent.position.y = curY;
+
+        // Altitude descent: hover back to pad region, then vertical touchdown from 18m to 0m
+        if (flightProgress < 0.65) {
+          const startAlt = startPos.z || 40;
+          agent.altitude = startAlt + (18 - startAlt) * (flightProgress / 0.65);
+        } else {
+          const descentP = (flightProgress - 0.65) / 0.35;
+          agent.altitude = Math.max(0, 18 * (1 - descentP));
+        }
+        agent.position.z = agent.altitude;
+
+        const vx = (curX - prevX) / Math.max(dt, 0.001);
+        const vy = (curY - prevY) / Math.max(dt, 0.001);
+        agent.speed = Math.max(0, Math.hypot(vx, vy));
+
+        if (agent.speed > 0.2) {
+          const angle = (Math.atan2(vy, vx) * 180) / Math.PI;
+          agent.heading = Math.round((angle + 360) % 360);
+          agent.orientation.yaw = agent.heading;
+          agent.orientation.pitch = -Math.min(10, agent.speed * 1.2);
+          agent.orientation.roll = Math.sin(t * 2) * 0.5;
+        } else {
+          agent.speed = 0;
+          agent.orientation.pitch = 0;
+          agent.orientation.roll = 0;
+        }
+
+        if (agent.altitude > 0.1) {
+          allLanded = false;
+        }
+
+        // Record trajectory
+        const lastPoint = agent.trajectory[agent.trajectory.length - 1];
+        if (Math.hypot(agent.position.x - lastPoint.x, agent.position.y - lastPoint.y) > 1.8) {
+          agent.trajectory.push({ ...agent.position });
+          if (agent.trajectory.length > 400) agent.trajectory.shift();
+        }
+      }
+
+      if (flightProgress >= 1.0 && allLanded) {
+        this.state.missionStatus = 'COMPLETE';
+        for (const agent of Object.values(this.state.agents)) {
+          agent.status = 'ONLINE';
+          agent.altitude = 0;
+          agent.speed = 0;
+          agent.orientation.pitch = 0;
+          agent.orientation.roll = 0;
+        }
+        this.addEvent('SUCCESS', 'All AAVs safely touched down on launch pads. Mission complete.');
+        this.stopClock();
+      }
+      return;
+    }
 
     for (const [id, agent] of Object.entries(this.state.agents)) {
       const targetAlt = targetAltitudes[id as keyof typeof targetAltitudes] || 40;
@@ -558,26 +649,40 @@ export class SimulationEngine {
           agent.orientation.roll = Math.sin(t * 2) * 1.2;
         }
       } else {
-        // --- PHASE 3: Predefined Realistic Operational Survey Trajectories ---
-        let cx = 0, cy = 0, rx = 28, ry = 22, omega = 0.12, phase = 0;
+        // --- PHASE 3: Operational Survey Trajectories (Dynamic 100% Sector Sweeping) ---
+        const surveyT = t - 12.0;
+
+        // Dynamic expanding sweep bounds (radius modulation & pattern rotation)
+        const rSweep = 12 + Math.sin(surveyT * 0.14) * 14 + Math.min(8, surveyT * 0.1);
+        const rotAngle = surveyT * 0.06;
+
+        let cx = 0, cy = 0, baseRx = 24, baseRy = 20, omega = 0.14, phase = 0;
         if (id === 'AAV-01') {
-          // Sector Alpha: Commercial Core Boustrophedon / Figure-eight
-          cx = -62; cy = 52; rx = 24; ry = 20; omega = 0.14; phase = 0.4;
+          // Sector Alpha: Commercial Core
+          cx = -62; cy = 52; baseRx = 20; baseRy = 18; omega = 0.14; phase = 0.4;
           agent.speed = 8.4 + Math.sin(t * 0.8) * 0.5;
         } else if (id === 'AAV-02') {
-          // Sector Bravo: Logistics Hub Figure-eight Overpass Loops
-          cx = 68; cy = 46; rx = 22; ry = 24; omega = 0.13; phase = 1.8;
+          // Sector Bravo: Logistics Hub
+          cx = 68; cy = 46; baseRx = 18; baseRy = 20; omega = 0.13; phase = 1.8;
           agent.speed = 7.9 + Math.cos(t * 0.7) * 0.6;
         } else if (id === 'AAV-03') {
-          // Sector Charlie: Forward Perimeter Surveillance Sweep
-          cx = 0; cy = -72; rx = 26; ry = 20; omega = 0.15; phase = 3.2;
+          // Sector Charlie: Forward Perimeter
+          cx = 0; cy = -72; baseRx = 22; baseRy = 18; omega = 0.15; phase = 3.2;
           agent.speed = 8.8 + Math.sin(t * 0.9) * 0.4;
         }
 
-        // Periodic excursions into inter-agent overlap corridors for collaborative SLAM
         const overlapBias = Math.sin(t * 0.08) * 12;
-        const nextX = cx + Math.sin(t * omega + phase) * rx + (id === 'AAV-01' ? overlapBias : -overlapBias * 0.5);
-        const nextY = cy + Math.sin(2 * (t * omega + phase)) * ry;
+
+        const rx = baseRx + rSweep * 0.4;
+        const ry = baseRy + rSweep * 0.4;
+        const localX = Math.sin(t * omega + phase) * rx + (id === 'AAV-01' ? overlapBias : -overlapBias * 0.5);
+        const localY = Math.sin(2 * (t * omega + phase)) * ry;
+
+        const rotatedX = localX * Math.cos(rotAngle) - localY * Math.sin(rotAngle);
+        const rotatedY = localX * Math.sin(rotAngle) + localY * Math.cos(rotAngle);
+
+        const nextX = cx + rotatedX;
+        const nextY = cy + rotatedY;
 
         const prevX = agent.position.x;
         const prevY = agent.position.y;
@@ -585,7 +690,6 @@ export class SimulationEngine {
 
         agent.position.x = nextX;
         agent.position.y = nextY;
-        // Subtle atmospheric turbulence altitude micro-variation
         agent.altitude = targetAlt + Math.sin(t * 1.1 + id.charCodeAt(4)) * 0.4;
         agent.position.z = agent.altitude;
 
@@ -594,17 +698,13 @@ export class SimulationEngine {
         const targetAngle = (Math.atan2(vy, vx) * 180) / Math.PI;
         const normalizedAngle = (targetAngle + 360) % 360;
 
-        // Smooth yaw tracking
         let yawDiff = normalizedAngle - prevYaw;
         while (yawDiff > 180) yawDiff -= 360;
         while (yawDiff < -180) yawDiff += 360;
         agent.orientation.yaw = (prevYaw + yawDiff * Math.min(1, dt * 5) + 360) % 360;
         agent.heading = Math.round(agent.orientation.yaw);
 
-        // Realistic 6-DOF dynamic pitch and roll
-        // Pitch: nose tilts down with forward cruise speed
         agent.orientation.pitch = -(agent.speed / 9.0) * 9.5 + Math.sin(t * 1.6) * 0.8;
-        // Roll: banks into turn proportionally to turn rate
         const turnRate = yawDiff / Math.max(dt, 0.001);
         const targetRoll = -Math.max(-20, Math.min(20, turnRate * 0.22));
         agent.orientation.roll = targetRoll + Math.cos(t * 1.4) * 0.8;

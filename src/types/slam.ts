@@ -6,9 +6,10 @@ export type MissionStatus =
   | 'PAUSED'
   | 'FUSING'
   | 'FUSED'
+  | 'RETURNING'
   | 'COMPLETE';
 
-export type AgentStatus = 'OFFLINE' | 'INITIALIZING' | 'ONLINE' | 'EXPLORING' | 'MAPPING' | 'TRANSMITTING' | 'FUSED';
+export type AgentStatus = 'OFFLINE' | 'INITIALIZING' | 'ONLINE' | 'EXPLORING' | 'MAPPING' | 'TRANSMITTING' | 'FUSED' | 'RETURNING';
 
 export type SLAMMode = 'ORB-SLAM3_VIO' | 'COVINS_COLLAB' | 'DEGRADED_ODOM';
 
