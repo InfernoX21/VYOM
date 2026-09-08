@@ -71,7 +71,7 @@ export const SystemLogPanel: React.FC<SystemLogPanelProps> = ({ events }) => {
         }
       />
 
-      <div className="h-44 select-text overflow-y-auto rounded border border-line bg-surface-2 p-1.5">
+      <div className="h-44 select-text overflow-y-auto rounded-lg border border-white/10 bg-surface-2/40 backdrop-blur-md p-1.5 shadow-inner">
         {filteredEvents.length === 0 ? (
           <p className="py-6 text-center text-2xs text-ink-4">No entries for this filter.</p>
         ) : (
@@ -79,7 +79,7 @@ export const SystemLogPanel: React.FC<SystemLogPanelProps> = ({ events }) => {
             {filteredEvents.map((ev) => (
               <li
                 key={ev.id}
-                className="flex items-start gap-2 rounded px-1 py-0.5 hover:bg-surface-3"
+                className="flex items-start gap-2 rounded px-1 py-0.5 hover:bg-white/10 transition-colors"
               >
                 <span className="telemetry shrink-0 select-none text-3xs text-ink-4">
                   {ev.timestamp}

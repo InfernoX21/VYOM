@@ -1528,9 +1528,9 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
           {isLayersOpen && (
             <div
               onClick={(e) => e.stopPropagation()}
-              className="absolute left-0 top-full z-40 mt-1 w-60 rounded border border-line bg-surface-0/95 p-2"
+              className="absolute left-0 top-full z-40 mt-1.5 w-64 rounded-md border border-line bg-surface-1 p-2.5"
             >
-              <div className="mb-1.5 flex items-center justify-between border-b border-line pb-1.5">
+              <div className="mb-1.5 flex items-center justify-between border-b border-white/10 pb-1.5">
                 <span className="text-2xs font-medium text-ink-2">Map layers</span>
                 <span className="telemetry text-3xs text-ink-4">{activeLayers} active</span>
               </div>
@@ -1623,7 +1623,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
         id="survey-panel"
         onClick={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
-        className="absolute right-2 top-12 z-20 w-64 overflow-hidden rounded border border-line bg-surface-0/95"
+        className="absolute right-2 top-12 z-20 max-h-[calc(100%-3.5rem)] w-64 overflow-y-auto rounded-md border border-line bg-surface-1"
       >
         <button
           type="button"
@@ -1666,7 +1666,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
               </div>
             </div>
 
-            <div className="space-y-1.5 border-t border-line pt-2">
+            <div className="space-y-1.5 border-t border-white/10 pt-2">
               {coverage.sectors.length === 0 ? (
                 <p className="text-3xs text-ink-4">Start the mission to begin the survey.</p>
               ) : (
@@ -1700,7 +1700,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
               )}
             </div>
 
-            <div className="border-t border-line pt-2">
+            <div className="border-t border-white/10 pt-2">
               <div className="mb-1 flex items-center justify-between gap-2">
                 <span className="text-3xs text-ink-3">Coverage gaps</span>
                 <StatusBadge
@@ -1717,7 +1717,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
                   {coverage.gaps.map((gap) => (
                     <li
                       key={`${gap.sector}-${gap.region}`}
-                      className="flex items-center justify-between gap-2 rounded-sm border border-line bg-surface-1 px-1.5 py-1"
+                      className="flex items-center justify-between gap-2 rounded-md border border-white/10 bg-surface-2/50 backdrop-blur-md px-1.5 py-1"
                     >
                       <span className="flex min-w-0 items-center gap-1.5">
                         <AlertTriangle className="h-3 w-3 shrink-0 text-warning-ink" />
@@ -1745,7 +1745,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
               )}
             </div>
 
-            <div className="space-y-1.5 border-t border-line pt-2">
+            <div className="space-y-1.5 border-t border-white/10 pt-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-3xs text-ink-3">Overlay</span>
                 <Segmented
@@ -1787,7 +1787,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
       {/* Bottom: legend and fusion notice */}
       <div className="pointer-events-none absolute inset-x-2 bottom-2 z-20 flex flex-wrap items-end justify-between gap-2">
         <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-line bg-surface-0/95 px-2.5 py-1.5 text-3xs text-ink-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-white/15 bg-surface-1/80 backdrop-blur-xl px-3 py-1.5 text-3xs text-ink-2 shadow-lg">
             {AGENT_IDS.map((id) => (
               <span key={id} className="flex items-center gap-1.5">
                 <span
@@ -1807,7 +1807,7 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
             </span>
           </div>
 
-          <div className="hidden rounded border border-line bg-surface-0/95 px-2.5 py-1.5 text-3xs text-ink-4 xl:block">
+          <div className="hidden rounded-lg border border-white/15 bg-surface-1/80 backdrop-blur-xl px-3 py-1.5 text-3xs text-ink-3 xl:block shadow-lg">
             Drag to orbit · scroll to zoom · click a vehicle to select
           </div>
         </div>

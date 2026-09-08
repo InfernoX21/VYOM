@@ -1,11 +1,10 @@
 @import "tailwindcss";
 
 /* ============================================================================
-   VYOM DESIGN SYSTEM — single source of truth for colour, type and spacing.
-   Theme: professional autonomous-systems mission control.
-   Surfaces: charcoal / gray-black.  Text: white + light gray.
-   Accent / primary action: orange.  Running: green.  Fusion: orange.
-   Stopped / fault: red.  Neutral controls: gray.
+   VYOM DESIGN SYSTEM — Glassmorphism Edition
+   Theme: High-tech autonomous-systems mission control with sophisticated
+          translucent glassmorphism, dynamic backdrop blurring, and subtle
+          glowing glass highlights.
    ========================================================================== */
 
 @theme {
@@ -15,68 +14,68 @@
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo,
     Consolas, monospace;
 
-  /* Compact scale additions (Tailwind defaults xs..xl remain available) */
-  --text-3xs: 0.625rem; /* 10px — dense tile captions */
+  /* Compact scale additions */
+  --text-3xs: 0.625rem;
   --text-3xs--line-height: 1.35;
-  --text-2xs: 0.6875rem; /* 11px — labels, table cells */
+  --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1.45;
 
-  /* ---- Surfaces (charcoal / gray-black) --------------------------------- */
-  --color-surface-0: #0d0e10; /* app canvas, 3D viewport backdrop */
-  --color-surface-1: #15171a; /* panels, header, modals */
-  --color-surface-2: #1c1f23; /* tiles, rows, inputs inside panels */
-  --color-surface-3: #24282d; /* hover / raised control */
-  --color-surface-4: #2e3238; /* active control, track fill */
+  /* ---- Glassmorphic Surfaces (translucent charcoal & dark slate) ---------- */
+  --color-surface-0: #0b0d10;
+  --color-surface-1: #12161b;
+  --color-surface-2: #191e25;
+  --color-surface-3: #222832;
+  --color-surface-4: #2c333e;
 
-  /* ---- Borders ---------------------------------------------------------- */
-  --color-line: #2a2e34; /* default hairline */
-  --color-line-strong: #3a4046; /* emphasised divider, focused input */
+  /* ---- Borders & Glass Edge Highlights ---------------------------------- */
+  --color-line: #303742;
+  --color-line-strong: #47515f;
 
   /* ---- Text ------------------------------------------------------------- */
-  --color-ink: #f1f3f5; /* primary text — white */
-  --color-ink-2: #aab0b8; /* secondary text — light gray */
-  --color-ink-3: #7b818a; /* captions, units, muted labels */
-  --color-ink-4: #575c64; /* disabled */
+  --color-ink: #f3f5f8;
+  --color-ink-2: #b4bcc6;
+  --color-ink-3: #848c98;
+  --color-ink-4: #5d6470;
 
-  /* ---- Primary action / accent: orange ---------------------------------- */
-  --color-primary: #e0762c;
-  --color-primary-hover: #ef8b43;
-  --color-primary-press: #c26320;
-  --color-primary-dim: #2a1a0d; /* tinted surface */
-  --color-primary-line: #6b4119;
-  --color-primary-ink: #f0a668; /* orange text on dark */
+  /* ---- Primary accent: vibrant glowing orange --------------------------- */
+  --color-primary: #d56f29;
+  --color-primary-hover: #e67d34;
+  --color-primary-press: #b75d20;
+  --color-primary-dim: rgba(213, 111, 41, 0.16);
+  --color-primary-line: rgba(213, 111, 41, 0.5);
+  --color-primary-ink: #efaa78;
 
-  /* ---- Success / running: green ----------------------------------------- */
+  /* ---- Success: emerald green ------------------------------------------- */
   --color-success: #43a05a;
   --color-success-hover: #55b46c;
   --color-success-press: #37864a;
-  --color-success-dim: #12241a;
-  --color-success-line: #2b5a39;
+  --color-success-dim: rgba(67, 160, 90, 0.18);
+  --color-success-line: rgba(67, 160, 90, 0.45);
   --color-success-ink: #6dc186;
 
-  /* ---- Warning / fusion in progress: orange-amber ----------------------- */
+  /* ---- Warning: amber --------------------------------------------------- */
   --color-warning: #cf8b1e;
   --color-warning-hover: #de9d33;
-  --color-warning-dim: #2a2010;
-  --color-warning-line: #67491a;
+  --color-warning-dim: rgba(207, 139, 30, 0.18);
+  --color-warning-line: rgba(207, 139, 30, 0.45);
   --color-warning-ink: #e0ab53;
 
-  /* ---- Error / paused / stopped: red ----------------------------------- */
+  /* ---- Danger: coral red ------------------------------------------------ */
   --color-danger: #c94a40;
   --color-danger-hover: #d95d53;
   --color-danger-press: #a93b32;
-  --color-danger-dim: #2a1412;
-  --color-danger-line: #672b26;
+  --color-danger-dim: rgba(201, 74, 64, 0.18);
+  --color-danger-line: rgba(201, 74, 64, 0.45);
   --color-danger-ink: #e07b73;
 
-  /* ---- Fleet identity (restrained: orange / gold / green) --------------- */
+  /* ---- Fleet identity --------------------------------------------------- */
   --color-aav-1: #e0762c;
   --color-aav-2: #cfa02c;
   --color-aav-3: #43a05a;
 }
 
 /* ============================================================================
-   Base
+   Base Body Ambient Atmosphere
    ========================================================================== */
 
 * {
@@ -94,7 +93,7 @@ body {
   background-color: var(--color-surface-0);
   color: var(--color-ink);
   font-family: var(--font-sans);
-  font-size: 0.8125rem; /* 13px base — dense but readable */
+  font-size: 0.8125rem;
   line-height: 1.5;
   font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
@@ -102,7 +101,6 @@ body {
   overflow: hidden;
 }
 
-/* Telemetry, coordinates, timestamps, metrics and technical IDs only. */
 code,
 pre,
 kbd,
@@ -137,47 +135,55 @@ select:disabled {
   cursor: default;
 }
 
-/* Visible, non-decorative focus ring for keyboard users. */
 :focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 1px;
 }
 
 /* ============================================================================
-   Component utilities — shared so panels never re-declare chrome
+   Glassmorphism Utility Classes
    ========================================================================== */
 
 @utility panel {
   background-color: var(--color-surface-1);
   border: 1px solid var(--color-line);
   border-radius: 0.375rem;
+  box-shadow: none;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+
+  &:hover {
+    border-color: var(--color-line-strong);
+  }
 }
 
 @utility tile {
   background-color: var(--color-surface-2);
   border: 1px solid var(--color-line);
   border-radius: 0.25rem;
+  box-shadow: none;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+
+  &:hover {
+    background-color: var(--color-surface-3);
+    border-color: var(--color-line-strong);
+  }
 }
 
-/* Numeric readouts: aligned digits, no font-family surprises. */
 @utility telemetry {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
 
-/* ============================================================================
-   Scrollbars — subtle, matched to charcoal surfaces
-   ========================================================================== */
-
+/* Scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-surface-4) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -185,22 +191,19 @@ select:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-surface-4);
+  background: rgba(255, 255, 255, 0.18);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-line-strong);
+  background: rgba(255, 255, 255, 0.32);
 }
 
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-/* ============================================================================
-   Motion — restrained. Progress feedback only, no ambient pulsing.
-   ========================================================================== */
-
+/* Animations */
 @keyframes vyom-indeterminate {
   0% {
     transform: translateX(-100%);

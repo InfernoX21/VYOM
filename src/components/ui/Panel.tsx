@@ -41,7 +41,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   className = '',
 }) => (
   <header
-    className={`flex items-center justify-between gap-3 pb-2 mb-3 border-b border-line ${className}`}
+    className={`flex items-center justify-between gap-3 pb-2 mb-3 border-b border-white/10 ${className}`}
   >
     <div className="flex items-center gap-2 min-w-0">
       {icon && <span className="text-ink-3 shrink-0">{icon}</span>}
@@ -90,7 +90,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
 }) => (
   <span
     id={id}
-    className={`inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-3xs font-medium whitespace-nowrap ${BADGE_TONE[tone]} ${className}`}
+    className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-3xs font-medium whitespace-nowrap ${BADGE_TONE[tone]} ${className}`}
   >
     {dot && <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${DOT_TONE[tone]}`} />}
     {label}

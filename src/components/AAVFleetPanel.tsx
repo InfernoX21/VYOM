@@ -62,14 +62,14 @@ export const AAVFleetPanel: React.FC<AAVFleetPanelProps> = ({
                   onSelectAgent(agent.id);
                 }
               }}
-              className={`flex flex-col gap-2 rounded border p-2.5 transition-colors duration-100 ${
+              className={`flex flex-col gap-2 rounded-md border p-2.5 transition-colors duration-200 ${
                 isSelected
-                  ? 'border-primary bg-surface-3'
-                  : 'border-line bg-surface-2 hover:border-line-strong'
+                  ? 'border-primary-line bg-surface-3'
+                  : 'border-line bg-surface-2 hover:border-line-strong hover:bg-surface-3'
               }`}
             >
               {/* Identity */}
-              <div className="flex items-center justify-between gap-2 border-b border-line pb-2">
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span
                     className="h-2.5 w-2.5 shrink-0 rounded-sm"

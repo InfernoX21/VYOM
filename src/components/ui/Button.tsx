@@ -22,23 +22,23 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANT: Record<ButtonVariant, string> = {
   primary:
-    'bg-primary text-surface-0 border-primary hover:bg-primary-hover active:bg-primary-press font-semibold',
+    'bg-primary text-surface-0 border-primary hover:bg-primary-hover active:bg-primary-press font-semibold shadow-none',
   success:
-    'bg-success text-surface-0 border-success hover:bg-success-hover active:bg-success-press font-semibold',
+    'bg-success text-surface-0 border-success hover:bg-success-hover active:bg-success-press font-semibold shadow-none',
   danger:
-    'bg-danger text-surface-0 border-danger hover:bg-danger-hover active:bg-danger-press font-semibold',
+    'bg-danger text-surface-0 border-danger hover:bg-danger-hover active:bg-danger-press font-semibold shadow-none',
   neutral:
-    'bg-surface-2 text-ink border-line hover:bg-surface-3 hover:border-line-strong font-medium',
+    'bg-surface-2 text-ink border-line hover:bg-surface-3 hover:border-line-strong font-medium shadow-none',
   ghost:
-    'bg-transparent text-ink-2 border-transparent hover:bg-surface-3 hover:text-ink font-medium',
+    'bg-transparent text-ink-2 border-transparent hover:bg-white/10 hover:text-ink font-medium',
 };
 
 const ACTIVE: Record<ButtonVariant, string> = {
   primary: '',
   success: '',
   danger: '',
-  neutral: 'bg-surface-4 text-ink border-line-strong',
-  ghost: 'bg-surface-3 text-ink',
+  neutral: 'bg-surface-4 text-ink border-line-strong shadow-none',
+  ghost: 'bg-white/10 text-ink',
 };
 
 const SIZE: Record<ButtonSize, string> = {
@@ -64,8 +64,8 @@ export const Button: React.FC<ButtonProps> = ({
   <button
     {...rest}
     className={[
-      'inline-flex items-center justify-center shrink-0 rounded border',
-      'transition-colors duration-100 whitespace-nowrap',
+      'inline-flex items-center justify-center shrink-0 rounded-sm border',
+      'transition-all duration-150 whitespace-nowrap',
       'disabled:opacity-45 disabled:pointer-events-none',
       VARIANT[variant],
       active ? ACTIVE[variant] : '',
@@ -105,7 +105,7 @@ export function Segmented<T extends string>({
     <div
       role="group"
       aria-label={ariaLabel}
-      className={`inline-flex items-center gap-0.5 rounded border border-line bg-surface-2 p-0.5 ${className}`}
+      className={`inline-flex items-center gap-0.5 rounded-sm border border-line bg-surface-2 p-0.5 ${className}`}
     >
       {options.map((opt) => {
         const selected = opt.value === value;
@@ -117,12 +117,12 @@ export function Segmented<T extends string>({
             aria-pressed={selected}
             onClick={() => onChange(opt.value)}
             className={[
-              'rounded-sm border border-transparent transition-colors duration-100 whitespace-nowrap',
+              'rounded-sm border border-transparent transition-all duration-150 whitespace-nowrap',
               size === 'sm' ? 'h-6 px-2 text-2xs' : 'h-7 px-2.5 text-xs',
               mono ? 'telemetry' : '',
               selected
-                ? 'bg-surface-4 text-ink font-semibold border-line-strong'
-                : 'text-ink-3 hover:text-ink hover:bg-surface-3 font-medium',
+                ? 'bg-surface-3 text-ink font-semibold border-line-strong'
+                : 'text-ink-3 hover:text-ink hover:bg-white/10 font-medium',
             ]
               .filter(Boolean)
               .join(' ')}

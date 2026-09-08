@@ -1,8 +1,8 @@
 import React from 'react';
 import { SimulationState } from '../simulation/simulationEngine';
-import { Scenario } from '../types/slam';
+import { AAVTelemetry, Scenario } from '../types/slam';
 import { SCENARIOS } from '../simulation/scenarios';
-import { Play, Pause, BarChart3, BookOpen, Camera, Layers, Radio } from 'lucide-react';
+import { Play, Pause, BarChart3, BookOpen, Camera, ChevronDown, Layers, Radio } from 'lucide-react';
 import { VyomLogo } from './VyomLogo';
 import { Button, Segmented } from './ui/Button';
 import { StatusBadge } from './ui/Panel';
@@ -16,6 +16,7 @@ import {
 interface CommandCenterHeaderProps {
   simState: SimulationState;
   scenario: Scenario;
+  coveragePercent: number;
   onStart: () => void;
   onPause: () => void;
   onReset: () => void;
@@ -39,6 +40,7 @@ const SPEED_OPTIONS = [
 export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
   simState,
   scenario,
+  coveragePercent,
   onStart,
   onPause,
   onReset,
@@ -51,11 +53,15 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
   onOpenCameraFeed,
   onOpenFusionModal,
 }) => {
+  const [isPanelMenuOpen, setIsPanelMenuOpen] = React.useState(false);
   const { missionStatus, isRunning, collabSlam } = simState;
   const isPaused = missionStatus === 'PAUSED';
   const isComplete = missionStatus === 'COMPLETE';
   const isFused = collabSlam.fusionStage === 'GLOBAL_FUSED';
   const isFusingNow = collabSlam.fusionStage !== 'IDLE' && !isFused;
+  const onlineAavs = (Object.values(simState.agents) as AAVTelemetry[]).filter(
+    (agent) => agent.networkConnected
+  ).length;
 
   /* Run control: Start (green) -> Pause (red) -> Resume (green). */
   const runLabel = isRunning
@@ -73,28 +79,43 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
     : 'Fuse maps';
 
   return (
-    <header className="flex shrink-0 items-center gap-3 border-b border-line bg-surface-1 px-3 py-1.5 overflow-x-auto">
+    <header className="sticky top-0 z-40 shrink-0 border-b border-line bg-surface-1">
+      <div className="flex items-center gap-3 overflow-visible px-3 py-2">
       {/* Identity */}
       <div className="flex shrink-0 items-center gap-2">
         <VyomLogo height={20} />
-        <div className="h-5 w-px bg-line" />
+        <div className="h-5 w-px bg-white/10" />
         <div className="leading-tight">
-          <div className="text-2xs font-semibold text-ink">Collaborative SLAM</div>
-          <div className="text-3xs text-ink-3">Multi-AAV mission control</div>
+          <div className="text-2xs font-semibold text-ink">Collaborative Visual-SLAM</div>
+          <div className="text-3xs text-ink-3">Autonomous mission control</div>
         </div>
       </div>
 
-      <div className="h-5 w-px shrink-0 bg-line" />
+      <div className="h-5 w-px shrink-0 bg-white/10" />
 
-      {/* Mission clock + state */}
-      <div className="flex shrink-0 items-center gap-2.5 rounded border border-line bg-surface-2 px-2 py-0.5">
+      {/* Mission state summary */}
+      <div className="flex shrink-0 items-center gap-3 border-x border-line px-3">
+        <label className="flex items-center gap-1 text-2xs text-ink-3">
+          Mission
+          <select
+            id="scenario-selector"
+            value={scenario.id}
+            onChange={(e) => onSelectScenario(e.target.value)}
+            className="h-7 max-w-[180px] border border-line bg-surface-2 px-2 text-2xs font-medium text-ink hover:border-line-strong focus:border-primary focus:outline-none"
+          >
+            {Object.values(SCENARIOS).map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="leading-tight">
-          <div className="text-3xs text-ink-3">Mission time</div>
+          <div className="text-3xs text-ink-3">Time</div>
           <div id="mission-clock" className="telemetry text-xs font-semibold text-ink">
             {formatMissionTime(simState.simTimeSeconds)}
           </div>
         </div>
-        <div className="h-6 w-px bg-line" />
         <div className="leading-tight">
           <div className="text-3xs text-ink-3">State</div>
           <StatusBadge
@@ -102,8 +123,19 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
             label={MISSION_STATUS_LABEL[missionStatus]}
             tone={MISSION_STATUS_TONE[missionStatus]}
             dot
-            className="mt-0.5"
           />
+        </div>
+        <div className="leading-tight">
+          <div className="text-3xs text-ink-3">AAVs</div>
+          <div className="telemetry text-xs font-semibold text-ink">{onlineAavs}/3</div>
+        </div>
+        <div className="leading-tight">
+          <div className="text-3xs text-ink-3">Coverage</div>
+          <div className="telemetry text-xs font-semibold text-ink">{Math.round(coveragePercent)}%</div>
+        </div>
+        <div className="leading-tight">
+          <div className="text-3xs text-ink-3">Latency</div>
+          <div className="telemetry text-xs font-semibold text-ink">{simState.network.latencyMs} ms</div>
         </div>
       </div>
 
@@ -142,26 +174,8 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
         </Button>
       </div>
 
-      <div className="h-5 w-px shrink-0 bg-line" />
-
       {/* Scenario + rate + stress */}
       <div className="flex shrink-0 items-center gap-1.5">
-        <label className="flex items-center gap-1 text-2xs text-ink-3">
-          Scenario
-          <select
-            id="scenario-selector"
-            value={scenario.id}
-            onChange={(e) => onSelectScenario(e.target.value)}
-            className="h-6 max-w-[180px] rounded border border-line bg-surface-2 px-1.5 text-2xs text-ink hover:border-line-strong focus:border-primary focus:outline-none"
-          >
-            {Object.values(SCENARIOS).map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
         <Segmented
           aria-label="Simulation rate"
           mono
@@ -181,54 +195,40 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
         </Button>
       </div>
 
-      {/* Spacer */}
-      <div className="flex-1" />
-
-      {/* Views — right-aligned */}
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="relative shrink-0">
         <Button
-          id="btn-open-camera-modal"
+          id="btn-panel-menu"
           variant="neutral"
           size="sm"
-          onClick={onOpenCameraFeed}
-          icon={<Camera className="h-3 w-3" />}
-          title="Onboard camera and feature tracking"
+          onClick={() => setIsPanelMenuOpen((isOpen) => !isOpen)}
+          aria-expanded={isPanelMenuOpen}
+          aria-haspopup="menu"
+          icon={<ChevronDown className="h-3 w-3" />}
         >
-          Vision feed
+          Panels
         </Button>
 
-        <Button
-          id="btn-open-fusion-pipeline"
-          variant="neutral"
-          size="sm"
-          onClick={onOpenFusionModal}
-          icon={<Radio className="h-3 w-3" />}
-          title="Map fusion pipeline"
-        >
-          Fusion pipeline
-        </Button>
+        {isPanelMenuOpen && (
+          <div
+            role="menu"
+            className="absolute right-full top-0 z-50 mr-1.5 flex min-w-44 flex-col gap-1 rounded-md border border-line bg-surface-1 p-1.5"
+          >
+            <Button id="btn-open-camera-modal" variant="neutral" size="sm" onClick={() => { onOpenCameraFeed(); setIsPanelMenuOpen(false); }} icon={<Camera className="h-3 w-3" />}>
+              Vision feed
+            </Button>
+            <Button id="btn-open-fusion-pipeline" variant="neutral" size="sm" onClick={() => { onOpenFusionModal(); setIsPanelMenuOpen(false); }} icon={<Radio className="h-3 w-3" />}>
+              Fusion pipeline
+            </Button>
+            <Button id="btn-open-analytics-modal" variant="neutral" size="sm" onClick={() => { onOpenAnalytics(); setIsPanelMenuOpen(false); }} icon={<BarChart3 className="h-3 w-3" />}>
+              Analytics
+            </Button>
+            <Button id="btn-open-architecture-modal" variant="neutral" size="sm" onClick={() => { onOpenArchitecture(); setIsPanelMenuOpen(false); }} icon={<BookOpen className="h-3 w-3" />}>
+              Architecture
+            </Button>
+          </div>
+        )}
+      </div>
 
-        <Button
-          id="btn-open-analytics-modal"
-          variant="neutral"
-          size="sm"
-          onClick={onOpenAnalytics}
-          icon={<BarChart3 className="h-3 w-3" />}
-          title="Mission analytics"
-        >
-          Analytics
-        </Button>
-
-        <Button
-          id="btn-open-architecture-modal"
-          variant="neutral"
-          size="sm"
-          onClick={onOpenArchitecture}
-          icon={<BookOpen className="h-3 w-3" />}
-          title="System architecture reference"
-        >
-          Architecture
-        </Button>
       </div>
     </header>
   );

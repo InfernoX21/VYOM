@@ -91,7 +91,7 @@ export const MapFusionModal: React.FC<MapFusionModalProps> = ({
       }
     >
       {/* Stage progress */}
-      <div className="rounded border border-line bg-surface-2 px-3 py-2.5">
+      <div className="rounded-lg border border-white/15 bg-surface-2/50 backdrop-blur-md px-3 py-2.5 shadow-md">
         <div className="flex items-baseline justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-xs font-semibold text-ink">
@@ -124,12 +124,12 @@ export const MapFusionModal: React.FC<MapFusionModalProps> = ({
             return (
               <li
                 key={stage}
-                className={`flex items-center gap-1.5 rounded-sm border px-1.5 py-1 text-3xs ${
+                className={`flex items-center gap-1.5 rounded-md border px-1.5 py-1 text-3xs transition-all ${
                   done
-                    ? 'border-success-line bg-success-dim text-success-ink'
+                    ? 'border-success-line bg-success-dim/80 backdrop-blur-sm text-success-ink'
                     : active
-                    ? 'border-warning-line bg-warning-dim text-warning-ink'
-                    : 'border-line bg-surface-1 text-ink-4'
+                    ? 'border-warning-line bg-warning-dim/80 backdrop-blur-sm text-warning-ink animate-pulse'
+                    : 'border-white/10 bg-surface-1/50 backdrop-blur-sm text-ink-4'
                 }`}
               >
                 <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">

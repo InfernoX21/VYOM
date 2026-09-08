@@ -60,6 +60,7 @@ export default function App() {
       <CommandCenterHeader
         simState={simState}
         scenario={engine.getScenario()}
+        coveragePercent={coverage?.overallPercent ?? 0}
         onStart={handleStart}
         onPause={handlePause}
         onReset={handleReset}
@@ -77,7 +78,7 @@ export default function App() {
       />
 
       {/* Main workspace: the 3D view stays dominant, telemetry sits in a fixed rail. */}
-      <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2 lg:flex-row">
+      <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 lg:flex-row lg:overflow-hidden">
         <div className="flex min-h-[380px] flex-[3] flex-col gap-2 overflow-hidden">
           <div className="panel min-h-0 flex-1 overflow-hidden bg-surface-0">
             <Global3DMap

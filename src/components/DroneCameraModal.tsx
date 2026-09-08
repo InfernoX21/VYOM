@@ -223,7 +223,7 @@ export const DroneCameraModal: React.FC<DroneCameraModalProps> = ({
         </div>
       }
     >
-      <div className="overflow-hidden rounded border border-line bg-surface-1">
+      <div className="overflow-hidden rounded-lg border border-white/15 bg-surface-1/60 backdrop-blur-md shadow-lg">
         <canvas
           ref={canvasRef}
           width={CANVAS_W}

@@ -19,7 +19,7 @@ const TABS: { value: Tab; label: string }[] = [
 
 /** Card used throughout the reference — one topic, one bordered block. */
 const Block: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-  <section className="rounded border border-line bg-surface-2 px-3 py-2.5">
+  <section className="rounded-lg border border-white/10 bg-surface-2/45 backdrop-blur-md px-3 py-2.5 shadow-sm">
     <h3 className="mb-1.5 text-2xs font-semibold text-ink">{title}</h3>
     <div className="space-y-2 text-2xs leading-relaxed text-ink-2">{children}</div>
   </section>
@@ -27,7 +27,7 @@ const Block: React.FC<{ title: string; children: React.ReactNode }> = ({ title, 
 
 /** ROS topic / hardware line: a mono identifier plus prose. */
 const Entry: React.FC<{ name: string; children: React.ReactNode }> = ({ name, children }) => (
-  <div className="rounded-sm border border-line bg-surface-1 px-2 py-1.5">
+  <div className="rounded-md border border-white/10 bg-surface-1/50 backdrop-blur-sm px-2 py-1.5">
     <div className="telemetry text-2xs font-semibold text-primary-ink">{name}</div>
     <div className="mt-0.5 text-2xs text-ink-3">{children}</div>
   </div>

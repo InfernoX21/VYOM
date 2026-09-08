@@ -49,13 +49,13 @@ export const Modal: React.FC<ModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-surface-0/80 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 transition-opacity duration-200"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
-        className={`panel w-full ${width} max-h-[90vh] flex flex-col overflow-hidden bg-surface-1 shadow-xl`}
+        className={`panel w-full ${width} max-h-[90vh] flex flex-col overflow-hidden bg-surface-1 border border-line shadow-none rounded-md`}
       >
         {/* Header */}
         <header className="flex items-start justify-between gap-3 border-b border-line px-4 py-3 shrink-0">
