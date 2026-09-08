@@ -1,108 +1,225 @@
 @import "tailwindcss";
 
+/* ============================================================================
+   VYOM DESIGN SYSTEM — single source of truth for colour, type and spacing.
+   Theme: professional autonomous-systems mission control.
+   Surfaces: charcoal / gray-black.  Text: white + light gray.
+   Accent / primary action: orange.  Running: green.  Fusion: orange.
+   Stopped / fault: red.  Neutral controls: gray.
+   ========================================================================== */
+
 @theme {
-  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* ---- Typography ------------------------------------------------------- */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo,
+    Consolas, monospace;
+
+  /* Compact scale additions (Tailwind defaults xs..xl remain available) */
+  --text-3xs: 0.625rem; /* 10px — dense tile captions */
+  --text-3xs--line-height: 1.35;
+  --text-2xs: 0.6875rem; /* 11px — labels, table cells */
+  --text-2xs--line-height: 1.45;
+
+  /* ---- Surfaces (charcoal / gray-black) --------------------------------- */
+  --color-surface-0: #0d0e10; /* app canvas, 3D viewport backdrop */
+  --color-surface-1: #15171a; /* panels, header, modals */
+  --color-surface-2: #1c1f23; /* tiles, rows, inputs inside panels */
+  --color-surface-3: #24282d; /* hover / raised control */
+  --color-surface-4: #2e3238; /* active control, track fill */
+
+  /* ---- Borders ---------------------------------------------------------- */
+  --color-line: #2a2e34; /* default hairline */
+  --color-line-strong: #3a4046; /* emphasised divider, focused input */
+
+  /* ---- Text ------------------------------------------------------------- */
+  --color-ink: #f1f3f5; /* primary text — white */
+  --color-ink-2: #aab0b8; /* secondary text — light gray */
+  --color-ink-3: #7b818a; /* captions, units, muted labels */
+  --color-ink-4: #575c64; /* disabled */
+
+  /* ---- Primary action / accent: orange ---------------------------------- */
+  --color-primary: #e0762c;
+  --color-primary-hover: #ef8b43;
+  --color-primary-press: #c26320;
+  --color-primary-dim: #2a1a0d; /* tinted surface */
+  --color-primary-line: #6b4119;
+  --color-primary-ink: #f0a668; /* orange text on dark */
+
+  /* ---- Success / running: green ----------------------------------------- */
+  --color-success: #43a05a;
+  --color-success-hover: #55b46c;
+  --color-success-press: #37864a;
+  --color-success-dim: #12241a;
+  --color-success-line: #2b5a39;
+  --color-success-ink: #6dc186;
+
+  /* ---- Warning / fusion in progress: orange-amber ----------------------- */
+  --color-warning: #cf8b1e;
+  --color-warning-hover: #de9d33;
+  --color-warning-dim: #2a2010;
+  --color-warning-line: #67491a;
+  --color-warning-ink: #e0ab53;
+
+  /* ---- Error / paused / stopped: red ----------------------------------- */
+  --color-danger: #c94a40;
+  --color-danger-hover: #d95d53;
+  --color-danger-press: #a93b32;
+  --color-danger-dim: #2a1412;
+  --color-danger-line: #672b26;
+  --color-danger-ink: #e07b73;
+
+  /* ---- Fleet identity (restrained: orange / gold / green) --------------- */
+  --color-aav-1: #e0762c;
+  --color-aav-2: #cfa02c;
+  --color-aav-3: #43a05a;
 }
 
-:root {
-  --font-ui: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-telemetry: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+/* ============================================================================
+   Base
+   ========================================================================== */
+
+* {
+  border-color: var(--color-line);
 }
 
-@layer base {
-  html,
-  body,
-  #root {
-    background-color: #000000;
-    color: #f4f4f5;
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    font-family: var(--font-ui);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
+html,
+body,
+#root {
+  height: 100%;
 }
 
-/* Reusable Typography System Utility Classes */
-.font-sans {
-  font-family: var(--font-ui);
+body {
+  margin: 0;
+  background-color: var(--color-surface-0);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem; /* 13px base — dense but readable */
+  line-height: 1.5;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
 }
 
-.font-mono {
-  font-family: var(--font-telemetry);
-}
-
-.tabular-nums {
+/* Telemetry, coordinates, timestamps, metrics and technical IDs only. */
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
-.font-telemetry {
-  font-family: var(--font-telemetry);
-  font-variant-numeric: tabular-nums;
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  margin: 0;
 }
 
-.text-title {
-  font-family: var(--font-ui);
-  font-weight: 700;
+button,
+select,
+input {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+button:not(:disabled),
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled {
+  cursor: default;
+}
+
+/* Visible, non-decorative focus ring for keyboard users. */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* ============================================================================
+   Component utilities — shared so panels never re-declare chrome
+   ========================================================================== */
+
+@utility panel {
+  background-color: var(--color-surface-1);
+  border: 1px solid var(--color-line);
+  border-radius: 0.375rem;
+}
+
+@utility tile {
+  background-color: var(--color-surface-2);
+  border: 1px solid var(--color-line);
+  border-radius: 0.25rem;
+}
+
+/* Numeric readouts: aligned digits, no font-family surprises. */
+@utility telemetry {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
 
-.text-heading {
-  font-family: var(--font-ui);
-  font-weight: 600;
-  letter-spacing: normal;
+/* ============================================================================
+   Scrollbars — subtle, matched to charcoal surfaces
+   ========================================================================== */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-4) transparent;
 }
 
-.text-subheading {
-  font-family: var(--font-ui);
-  font-weight: 500;
-  letter-spacing: normal;
-}
-
-.text-body {
-  font-family: var(--font-ui);
-  font-weight: 400;
-  letter-spacing: normal;
-}
-
-.text-label {
-  font-family: var(--font-ui);
-  font-weight: 500;
-  letter-spacing: normal;
-}
-
-.text-caption {
-  font-family: var(--font-ui);
-  font-weight: 400;
-  letter-spacing: normal;
-}
-
-.text-metric {
-  font-family: var(--font-ui);
-  font-weight: 600;
-  letter-spacing: normal;
-}
-
-/* Tactical OLED Black Scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #000000;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border-radius: 2px;
+  background: var(--color-surface-4);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
+  background: var(--color-line-strong);
 }
 
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ============================================================================
+   Motion — restrained. Progress feedback only, no ambient pulsing.
+   ========================================================================== */
+
+@keyframes vyom-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@utility bar-indeterminate {
+  animation: vyom-indeterminate 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

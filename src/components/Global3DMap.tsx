@@ -1,42 +1,61 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
 import { SimulationState } from '../simulation/simulationEngine';
-import { Scenario, AAVTelemetry } from '../types/slam';
+import { Scenario, AAVTelemetry, SectorDefinition } from '../types/slam';
 import {
-  Compass,
+  Layers,
   Maximize2,
   Minimize2,
-  Radio,
-  Layers,
-  Eye,
-  Crosshair,
-  Wifi,
-  Scan,
-  AlertTriangle,
-  Flame,
   ChevronDown,
   ChevronUp,
-  Sliders,
-  CheckCircle2,
+  Check,
+  Compass,
+  Radio,
+  Wifi,
+  Scan,
+  Eye,
+  AlertTriangle,
+  Crosshair,
 } from 'lucide-react';
+import { HEX, AGENT_HEX, AGENT_COLOR } from '../design/tokens';
+import { CAMERA_MODE_LABEL, formatCount } from '../design/labels';
+import { Button, Segmented } from './ui/Button';
+import { StatusBadge, ProgressBar } from './ui/Panel';
 
-export interface CoverageGapInfo {
+/* -------------------------------------------------------------------------- */
+/* Coverage contract — the map measures it, analytics consumes it              */
+/* -------------------------------------------------------------------------- */
+
+export interface CoverageGap {
   sector: string;
-  quadrant: string;
+  /** Where inside the sector the deficit sits, e.g. "North-east edge". */
+  region: string;
   x: number;
   y: number;
   unmappedPercent: number;
   assignedAgent: string;
 }
 
+export interface SectorCoverage {
+  id: string;
+  name: string;
+  percent: number;
+  assignedAgent: string;
+  cellsMapped: number;
+  cellsTotal: number;
+}
+
 export interface CoverageMetrics {
   overallPercent: number;
-  alphaPercent: number;
-  bravoPercent: number;
-  charliePercent: number;
-  totalAreaM2: number;
-  gapsCount: number;
-  gapsList: CoverageGapInfo[];
+  cellsMapped: number;
+  cellsTotal: number;
+  /** Ground area of one occupancy cell, m². */
+  cellAreaM2: number;
+  /** cellsMapped × cellAreaM2 — the only area figure the UI should quote. */
+  areaMappedM2: number;
+  gapCount: number;
+  sectors: SectorCoverage[];
+  gaps: CoverageGap[];
 }
 
 interface Global3DMapProps {
@@ -44,92 +63,910 @@ interface Global3DMapProps {
   scenario: Scenario;
   onSelectAgent?: (agentId: string) => void;
   selectedAgentId?: string | null;
+  /** Publishes the measured survey so other views quote the same numbers. */
+  onCoverageChange?: (metrics: CoverageMetrics) => void;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Survey model                                                               */
+/* -------------------------------------------------------------------------- */
+
+/** Occupancy cell edge in metres — the resolution of the survey grid. */
+const CELL_M = 3;
+/** Downward sensor footprint radius stamped along each track. */
+const SENSOR_RADIUS_M = 20;
+/** Track is resampled every this many metres before stamping. */
+const STAMP_STEP_M = 2;
+/** A sector below this percentage reports a coverage gap. */
+const GAP_THRESHOLD_PCT = 72;
+/** Coverage is remeasured at most this often, in ms. */
+const MEASURE_INTERVAL_MS = 250;
+
+const AGENT_BIT: Record<string, number> = { 'AAV-01': 1, 'AAV-02': 2, 'AAV-03': 4 };
+const AGENT_IDS = ['AAV-01', 'AAV-02', 'AAV-03'];
+
+type PaletteMode = 'UNIFORM' | 'AGENT';
+type CameraMode = 'TACTICAL' | 'TOP_DOWN' | 'MEC' | 'AAV-01' | 'AAV-02' | 'AAV-03';
+
+interface SurveyGrid {
+  dim: number;
+  cellM: number;
+  half: number;
+  /** One byte per cell holding a bitmask of the vehicles that observed it. */
+  mask: Uint8Array;
+  /** 1 where the cell belongs to at least one sector. */
+  inSurvey: Uint8Array;
+  surveyTotal: number;
+  sectors: { def: SectorDefinition; cells: Int32Array }[];
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  image: ImageData;
+}
+
+/** World (x, y) → grid column / row. Row 0 is the +y edge, matching texture v. */
+const toCol = (g: SurveyGrid, x: number) => Math.floor((x + g.half) / g.cellM);
+const toRow = (g: SurveyGrid, y: number) => Math.floor((g.half - y) / g.cellM);
+const cellX = (g: SurveyGrid, col: number) => -g.half + (col + 0.5) * g.cellM;
+const cellY = (g: SurveyGrid, row: number) => g.half - (row + 0.5) * g.cellM;
+
+function buildSurveyGrid(scen: Scenario): SurveyGrid {
+  const half = scen.groundRadius;
+  const dim = Math.max(48, Math.round((half * 2) / CELL_M));
+  const cellM = (half * 2) / dim;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = dim;
+  canvas.height = dim;
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+
+  const grid: SurveyGrid = {
+    dim,
+    cellM,
+    half,
+    mask: new Uint8Array(dim * dim),
+    inSurvey: new Uint8Array(dim * dim),
+    surveyTotal: 0,
+    sectors: [],
+    canvas,
+    ctx,
+    image: ctx.createImageData(dim, dim),
+  };
+
+  for (const def of scen.sectors) {
+    const cells: number[] = [];
+    const r2 = def.radius * def.radius;
+    const c0 = Math.max(0, toCol(grid, def.center.x - def.radius));
+    const c1 = Math.min(dim - 1, toCol(grid, def.center.x + def.radius));
+    const r0 = Math.max(0, toRow(grid, def.center.y + def.radius));
+    const r1 = Math.min(dim - 1, toRow(grid, def.center.y - def.radius));
+
+    for (let row = r0; row <= r1; row++) {
+      const wy = cellY(grid, row);
+      for (let col = c0; col <= c1; col++) {
+        const wx = cellX(grid, col);
+        const dx = wx - def.center.x;
+        const dy = wy - def.center.y;
+        if (dx * dx + dy * dy > r2) continue;
+        const idx = row * dim + col;
+        cells.push(idx);
+        if (!grid.inSurvey[idx]) {
+          grid.inSurvey[idx] = 1;
+          grid.surveyTotal++;
+        }
+      }
+    }
+    grid.sectors.push({ def, cells: Int32Array.from(cells) });
+  }
+
+  return grid;
+}
+
+/** Stamps one sensor footprint. Returns true when new ground was covered. */
+function stampFootprint(g: SurveyGrid, x: number, y: number, bit: number): boolean {
+  const c0 = Math.max(0, toCol(g, x - SENSOR_RADIUS_M));
+  const c1 = Math.min(g.dim - 1, toCol(g, x + SENSOR_RADIUS_M));
+  const r0 = Math.max(0, toRow(g, y + SENSOR_RADIUS_M));
+  const r1 = Math.min(g.dim - 1, toRow(g, y - SENSOR_RADIUS_M));
+  const r2 = SENSOR_RADIUS_M * SENSOR_RADIUS_M;
+  let changed = false;
+
+  for (let row = r0; row <= r1; row++) {
+    const dy = cellY(g, row) - y;
+    const dy2 = dy * dy;
+    for (let col = c0; col <= c1; col++) {
+      const dx = cellX(g, col) - x;
+      if (dx * dx + dy2 > r2) continue;
+      const idx = row * g.dim + col;
+      if ((g.mask[idx] & bit) === 0) {
+        g.mask[idx] |= bit;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+/**
+ * Repaints the overlay texture from the occupancy mask. Unmapped cells stay
+ * fully transparent, so the terrain reads through where nothing was surveyed.
+ */
+function paintSurveyGrid(g: SurveyGrid, mode: PaletteMode) {
+  const data = g.image.data;
+  for (let i = 0; i < g.mask.length; i++) {
+    const bits = g.mask[i];
+    const o = i * 4;
+    if (bits === 0) {
+      data[o + 3] = 0;
+      continue;
+    }
+    const overlap = (bits & 1 ? 1 : 0) + (bits & 2 ? 1 : 0) + (bits & 4 ? 1 : 0);
+
+    if (mode === 'AGENT' && overlap === 1) {
+      const hex =
+        bits & 1 ? AGENT_HEX['AAV-01'] : bits & 2 ? AGENT_HEX['AAV-02'] : AGENT_HEX['AAV-03'];
+      data[o] = (hex >> 16) & 255;
+      data[o + 1] = (hex >> 8) & 255;
+      data[o + 2] = hex & 255;
+      data[o + 3] = 150;
+    } else {
+      // Uniform survey shading: denser where footprints overlap.
+      data[o] = 200;
+      data[o + 1] = 206;
+      data[o + 2] = 214;
+      data[o + 3] = overlap >= 3 ? 132 : overlap === 2 ? 104 : 74;
+    }
+  }
+  g.ctx.putImageData(g.image, 0, 0);
+}
+
+/** Compass wording for a deficit centroid relative to its sector centre. */
+function describeRegion(dx: number, dy: number): string {
+  if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return 'Sector core';
+  const ns = dy > 6 ? 'North' : dy < -6 ? 'South' : '';
+  const ew = dx > 6 ? 'east' : dx < -6 ? 'west' : '';
+  if (ns && ew) return `${ns}-${ew} edge`;
+  if (ns) return `${ns} edge`;
+  return `${ew.charAt(0).toUpperCase()}${ew.slice(1)} edge`;
+}
+
+function measureCoverage(g: SurveyGrid): CoverageMetrics {
+  const cellAreaM2 = g.cellM * g.cellM;
+  const sectors: SectorCoverage[] = [];
+  const gaps: CoverageGap[] = [];
+
+  for (const { def, cells } of g.sectors) {
+    let mapped = 0;
+    let gapX = 0;
+    let gapY = 0;
+    let gapN = 0;
+
+    for (let i = 0; i < cells.length; i++) {
+      const idx = cells[i];
+      if (g.mask[idx] !== 0) {
+        mapped++;
+      } else {
+        const row = Math.floor(idx / g.dim);
+        gapX += cellX(g, idx - row * g.dim);
+        gapY += cellY(g, row);
+        gapN++;
+      }
+    }
+
+    const percent = cells.length === 0 ? 0 : Math.round((mapped / cells.length) * 100);
+    sectors.push({
+      id: def.id,
+      name: def.name,
+      percent,
+      assignedAgent: def.assignedAgent,
+      cellsMapped: mapped,
+      cellsTotal: cells.length,
+    });
+
+    if (percent < GAP_THRESHOLD_PCT && gapN > 0) {
+      const cx = gapX / gapN;
+      const cy = gapY / gapN;
+      gaps.push({
+        sector: def.id,
+        region: describeRegion(cx - def.center.x, cy - def.center.y),
+        x: cx,
+        y: cy,
+        unmappedPercent: 100 - percent,
+        assignedAgent: def.assignedAgent,
+      });
+    }
+  }
+
+  let cellsMapped = 0;
+  for (let i = 0; i < g.mask.length; i++) {
+    if (g.inSurvey[i] && g.mask[i] !== 0) cellsMapped++;
+  }
+  const cellsTotal = g.surveyTotal;
+
+  return {
+    overallPercent: cellsTotal === 0 ? 0 : (cellsMapped / cellsTotal) * 100,
+    cellsMapped,
+    cellsTotal,
+    cellAreaM2,
+    areaMappedM2: Math.round(cellsMapped * cellAreaM2),
+    gapCount: gaps.length,
+    sectors,
+    gaps,
+  };
+}
+
+const EMPTY_COVERAGE: CoverageMetrics = {
+  overallPercent: 0,
+  cellsMapped: 0,
+  cellsTotal: 0,
+  cellAreaM2: CELL_M * CELL_M,
+  areaMappedM2: 0,
+  gapCount: 0,
+  sectors: [],
+  gaps: [],
+};
+
+/* -------------------------------------------------------------------------- */
+/* Small scene helpers                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Flat ground ring, used for range circles and sector perimeters. */
+function makeRing(inner: number, outer: number, color: number, opacity: number, segments = 64) {
+  const mesh = new THREE.Mesh(
+    new THREE.RingGeometry(inner, outer, segments),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  return mesh;
+}
+
+/** Camera-facing text label drawn to a canvas texture. */
+function makeLabel(text: string, color: string, worldWidth: number) {
+  const pad = 8;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+  const font = '500 26px Inter, system-ui, sans-serif';
+  ctx.font = font;
+  const width = Math.ceil(ctx.measureText(text).width) + pad * 2;
+  canvas.width = width;
+  canvas.height = 40;
+
+  const ctx2 = canvas.getContext('2d') as CanvasRenderingContext2D;
+  ctx2.font = font;
+  ctx2.fillStyle = color;
+  ctx2.textBaseline = 'middle';
+  ctx2.fillText(text, pad, canvas.height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, opacity: 0.85 })
+  );
+  sprite.scale.set(worldWidth, (worldWidth * canvas.height) / canvas.width, 1);
+  return sprite;
+}
+
+function disposeSceneGraph(scene: THREE.Scene) {
+  scene.traverse((obj) => {
+    const withGeom = obj as THREE.Mesh;
+    if (withGeom.geometry) withGeom.geometry.dispose();
+    const material = (obj as THREE.Mesh).material as
+      | (THREE.Material & { map?: THREE.Texture | null })
+      | (THREE.Material & { map?: THREE.Texture | null })[]
+      | undefined;
+    const list = Array.isArray(material) ? material : material ? [material] : [];
+    for (const mat of list) {
+      if (mat.map) mat.map.dispose();
+      mat.dispose();
+    }
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Layer toggle row                                                           */
+/* -------------------------------------------------------------------------- */
+
+const LayerToggle: React.FC<{
+  id: string;
+  icon: React.ReactNode;
+  label: string;
+  hint?: string;
+  active: boolean;
+  onToggle: () => void;
+}> = ({ id, icon, label, hint, active, onToggle }) => (
+  <button
+    id={id}
+    type="button"
+    aria-pressed={active}
+    onClick={onToggle}
+    className={`flex w-full items-center justify-between gap-2 rounded-sm border px-2 py-1.5 text-2xs transition-colors duration-100 ${
+      active
+        ? 'border-line-strong bg-surface-3 text-ink'
+        : 'border-line bg-surface-1 text-ink-3 hover:bg-surface-2 hover:text-ink-2'
+    }`}
+  >
+    <span className="flex min-w-0 items-center gap-2">
+      <span className={active ? 'text-primary-ink' : 'text-ink-4'}>{icon}</span>
+      <span className="truncate">{label}</span>
+    </span>
+    <span className="flex shrink-0 items-center gap-1.5">
+      {hint && <span className="telemetry text-3xs text-ink-4">{hint}</span>}
+      <span
+        className={`flex h-3 w-3 items-center justify-center rounded-sm border ${
+          active ? 'border-primary bg-primary text-surface-0' : 'border-line-strong'
+        }`}
+      >
+        {active && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+      </span>
+    </span>
+  </button>
+);
+
+/* -------------------------------------------------------------------------- */
+/* Component                                                                  */
+/* -------------------------------------------------------------------------- */
 
 export const Global3DMap: React.FC<Global3DMapProps> = ({
   simState,
   scenario,
   onSelectAgent,
   selectedAgentId,
+  onCoverageChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
 
-  // Dynamic visual object references
-  const droneMeshesRef = useRef<Record<string, THREE.Group>>({});
-  const rotorMeshesRef = useRef<THREE.Mesh[]>([]);
-  const trajectoryLinesRef = useRef<Record<string, THREE.Line>>({});
-  const cameraFrustumsRef = useRef<Record<string, THREE.LineSegments>>({});
+  // Scene object registries, rebuilt whenever the scenario changes.
+  const droneGroupsRef = useRef<Record<string, THREE.Group>>({});
+  const rotorsRef = useRef<THREE.Mesh[]>([]);
+  const statusRingsRef = useRef<Record<string, THREE.Mesh>>({});
+  const selectRingsRef = useRef<Record<string, THREE.Mesh>>({});
+  const trackLinesRef = useRef<Record<string, THREE.Line>>({});
+  const footprintsRef = useRef<Record<string, THREE.LineSegments>>({});
   const dropLinesRef = useRef<Record<string, THREE.Line>>({});
-  const networkBeamsRef = useRef<Record<string, THREE.Line>>({});
-  const packetParticlesRef = useRef<Record<string, THREE.Mesh>>({});
-  const localPointsRef = useRef<Record<string, THREE.Points>>({});
-  const sharedMatchesLinesRef = useRef<THREE.LineSegments | null>(null);
-  const globalFusedPointsRef = useRef<THREE.Points | null>(null);
-  const radarSweepRef = useRef<THREE.Mesh | null>(null);
+  const uplinksRef = useRef<Record<string, THREE.Line>>({});
+  const packetsRef = useRef<Record<string, THREE.Mesh>>({});
+  const landmarkCloudsRef = useRef<Record<string, THREE.Points>>({});
+  const matchLinesRef = useRef<THREE.LineSegments | null>(null);
+  const fusedCloudRef = useRef<THREE.Points | null>(null);
+  const fusedCountRef = useRef(0);
 
-  // Heatmap Overlay & Coverage references
-  const heatmapMeshRef = useRef<THREE.Mesh | null>(null);
-  const heatmapCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const heatmapTextureRef = useRef<THREE.CanvasTexture | null>(null);
-  const gapMarkersGroupRef = useRef<THREE.Group | null>(null);
-  const exploredPointsRef = useRef<Record<string, { x: number; y: number }[]>>({
-    'AAV-01': [],
-    'AAV-02': [],
-    'AAV-03': [],
-  });
+  // Survey overlay.
+  const grid = useMemo(() => buildSurveyGrid(scenario), [scenario]);
+  const overlayMeshRef = useRef<THREE.Mesh | null>(null);
+  const overlayTextureRef = useRef<THREE.CanvasTexture | null>(null);
+  const gapGroupRef = useRef<THREE.Group | null>(null);
+  const lastStampRef = useRef<Record<string, { x: number; y: number } | null>>({});
+  const lastMeasureRef = useRef(0);
+  const publishedRef = useRef<CoverageMetrics | null>(null);
 
-  // Layer toggles (essential mission layers)
-  const [showTrajectories, setShowTrajectories] = useState(true);
-  const [showPointCloud, setShowPointCloud] = useState(true);
-  const [show5GLinks, setShow5GLinks] = useState(true);
-  const [showHeatmap, setShowHeatmap] = useState(true);
-  const [isLayersDropdownOpen, setIsLayersDropdownOpen] = useState(false);
-  const [heatmapMode, setHeatmapMode] = useState<'THERMAL' | 'AGENT_SPECTRUM'>('THERMAL');
-  const [heatmapOpacity, setHeatmapOpacity] = useState(0.72);
-  const [showCoverageGaps, setShowCoverageGaps] = useState(true);
-  const [isCoveragePanelOpen, setIsCoveragePanelOpen] = useState(true);
-  const [coverageMetrics, setCoverageMetrics] = useState<CoverageMetrics>({
-    overallPercent: 0,
-    alphaPercent: 0,
-    bravoPercent: 0,
-    charliePercent: 0,
-    totalAreaM2: 0,
-    gapsCount: 3,
-    gapsList: [],
-  });
+  /** Read by the render loop so it never closes over stale simulation state. */
+  const liveRef = useRef({ isRunning: false });
 
-  const [cameraMode, setCameraMode] = useState<'TACTICAL' | 'TOP_DOWN' | 'AAV-01' | 'AAV-02' | 'AAV-03' | 'MEC'>('TACTICAL');
+  // Layer state.
+  const [showSurvey, setShowSurvey] = useState(true);
+  const [showTracks, setShowTracks] = useState(true);
+  const [showLandmarks, setShowLandmarks] = useState(true);
+  const [showUplinks, setShowUplinks] = useState(true);
+  const [showFootprints, setShowFootprints] = useState(false);
+  const [showGapMarkers, setShowGapMarkers] = useState(true);
+  const [paletteMode, setPaletteMode] = useState<PaletteMode>('UNIFORM');
+  const [overlayOpacity, setOverlayOpacity] = useState(0.7);
+  const [isLayersOpen, setIsLayersOpen] = useState(false);
+  const [isSurveyPanelOpen, setIsSurveyPanelOpen] = useState(true);
+  const [coverage, setCoverage] = useState<CoverageMetrics>(EMPTY_COVERAGE);
+
+  const [cameraMode, setCameraMode] = useState<CameraMode>('TACTICAL');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Camera Orbit State
+  // Orbit state.
   const isDraggingRef = useRef(false);
+  const dragDistRef = useRef(0);
   const prevMouseRef = useRef({ x: 0, y: 0 });
-  const cameraSphericalRef = useRef({ radius: 190, theta: 0.8, phi: 1.1 });
-  const cameraTargetRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 5));
+  const orbitRef = useRef({ radius: 200, theta: 0.8, phi: 1.05 });
+  const targetRef = useRef(new THREE.Vector3(0, 0, 5));
 
-  // Initialize Three.js scene
+  const updateCameraPosition = useCallback(() => {
+    const camera = cameraRef.current;
+    if (!camera) return;
+    const { radius, theta, phi } = orbitRef.current;
+    const target = targetRef.current;
+    camera.position.set(
+      target.x + radius * Math.sin(phi) * Math.sin(theta),
+      target.y + radius * Math.cos(phi),
+      target.z + radius * Math.sin(phi) * Math.cos(theta)
+    );
+    camera.lookAt(target);
+  }, []);
+
+  /* ------------------------------------------------------------------ */
+  /* Scene construction                                                  */
+  /* ------------------------------------------------------------------ */
+
+  const buildEnvironment = useCallback(
+    (scene: THREE.Scene, scen: Scenario) => {
+      const radius = scen.groundRadius;
+
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(radius * 2, radius * 2, 1, 1),
+        new THREE.MeshStandardMaterial({ color: HEX.ground, roughness: 0.96, metalness: 0.04 })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      // Restrained survey grid: minor lines every ~8 m, no accent colour.
+      const gridHelper = new THREE.GridHelper(radius * 2, 40, HEX.gridMajor, HEX.gridMinor);
+      const gridMat = gridHelper.material as THREE.Material;
+      gridMat.transparent = true;
+      gridMat.opacity = 0.55;
+      gridHelper.position.y = 0.04;
+      scene.add(gridHelper);
+
+      // Range rings every 40 m for scale reference.
+      for (const r of [40, 80, 120, 160]) {
+        if (r > radius) continue;
+        const ring = makeRing(r - 0.2, r + 0.2, HEX.line, 0.7);
+        ring.position.y = 0.08;
+        scene.add(ring);
+      }
+
+      // Sector perimeters, tinted by the vehicle that owns the sector.
+      for (const sector of scen.sectors) {
+        const color = AGENT_HEX[sector.assignedAgent] ?? HEX.lineStrong;
+
+        const perimeter = makeRing(sector.radius - 0.35, sector.radius + 0.35, color, 0.45, 72);
+        perimeter.position.set(sector.center.x, 0.16, -sector.center.y);
+        scene.add(perimeter);
+
+        const fill = new THREE.Mesh(
+          new THREE.CircleGeometry(sector.radius, 64),
+          new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.025,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          })
+        );
+        fill.rotation.x = -Math.PI / 2;
+        fill.position.set(sector.center.x, 0.12, -sector.center.y);
+        scene.add(fill);
+
+        const label = makeLabel(`Sector ${sector.id}`, '#aab0b8', 22);
+        label.position.set(sector.center.x, 6, -sector.center.y);
+        scene.add(label);
+      }
+
+      // Structures: solid dark volumes with a single edge highlight.
+      const structureMat = new THREE.MeshStandardMaterial({
+        color: HEX.building,
+        roughness: 0.85,
+        metalness: 0.12,
+      });
+      const rubbleMat = new THREE.MeshStandardMaterial({
+        color: HEX.surface1,
+        roughness: 0.96,
+        metalness: 0.04,
+      });
+      const edgeMat = new THREE.LineBasicMaterial({
+        color: HEX.buildingEdge,
+        transparent: true,
+        opacity: 0.55,
+      });
+      const roofMat = new THREE.MeshStandardMaterial({ color: HEX.surface3, roughness: 0.7 });
+
+      for (const b of scen.buildings) {
+        if (b.type === 'tower') continue; // the edge node mast is built separately
+        const geom = new THREE.BoxGeometry(b.width, b.height, b.depth);
+        const mesh = new THREE.Mesh(geom, b.type === 'rubble' ? rubbleMat : structureMat);
+        mesh.position.set(b.x, b.height / 2, -b.y);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+
+        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom), edgeMat);
+        edges.position.copy(mesh.position);
+        scene.add(edges);
+
+        if (b.type === 'rubble') {
+          const slab = new THREE.Mesh(
+            new THREE.BoxGeometry(b.width * 0.6, 1.2, b.depth * 0.5),
+            rubbleMat
+          );
+          slab.position.set(b.x + 2, b.height + 0.5, -b.y - 1);
+          slab.rotation.set(0.2, 0.4, -0.3);
+          scene.add(slab);
+        } else if (b.height > 25) {
+          const plant = new THREE.Mesh(
+            new THREE.BoxGeometry(b.width * 0.32, 3.2, b.depth * 0.32),
+            roofMat
+          );
+          plant.position.set(b.x, b.height + 1.6, -b.y);
+          scene.add(plant);
+
+          // Obstruction light — the one red in the scene, and it means something.
+          const light = new THREE.Mesh(
+            new THREE.SphereGeometry(0.35, 8, 8),
+            new THREE.MeshBasicMaterial({ color: HEX.danger })
+          );
+          light.position.set(b.x + b.width * 0.3, b.height + 3.4, -b.y + b.depth * 0.3);
+          scene.add(light);
+        }
+      }
+
+      // Road surface.
+      const roadMat = new THREE.MeshBasicMaterial({ color: HEX.surface1 });
+      const roadX = new THREE.Mesh(new THREE.PlaneGeometry(radius * 1.8, 14), roadMat);
+      roadX.rotation.x = -Math.PI / 2;
+      roadX.position.y = 0.05;
+      scene.add(roadX);
+
+      const roadZ = new THREE.Mesh(new THREE.PlaneGeometry(14, radius * 1.8), roadMat);
+      roadZ.rotation.x = -Math.PI / 2;
+      roadZ.position.y = 0.06;
+      scene.add(roadZ);
+
+      const stripeMat = new THREE.LineDashedMaterial({
+        color: HEX.ink4,
+        dashSize: 3,
+        gapSize: 4,
+        transparent: true,
+        opacity: 0.55,
+      });
+      for (const pts of [
+        [new THREE.Vector3(-radius * 0.9, 0.07, 0), new THREE.Vector3(radius * 0.9, 0.07, 0)],
+        [new THREE.Vector3(0, 0.08, -radius * 0.9), new THREE.Vector3(0, 0.08, radius * 0.9)],
+      ]) {
+        const stripe = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), stripeMat);
+        stripe.computeLineDistances();
+        scene.add(stripe);
+      }
+
+      // Launch pad with one bay per vehicle.
+      const pad = new THREE.Group();
+      pad.position.set(0, 0.1, 12);
+
+      const platform = new THREE.Mesh(
+        new THREE.CylinderGeometry(9, 9.5, 0.2, 8),
+        new THREE.MeshStandardMaterial({ color: HEX.surface2, roughness: 0.85, metalness: 0.1 })
+      );
+      platform.position.y = 0.1;
+      pad.add(platform);
+
+      const padEdge = makeRing(8.3, 8.7, HEX.primary, 0.55, 40);
+      padEdge.position.y = 0.21;
+      pad.add(padEdge);
+
+      const padInner = makeRing(5.2, 5.4, HEX.ink4, 0.6, 40);
+      padInner.position.y = 0.22;
+      pad.add(padInner);
+
+      AGENT_IDS.forEach((id, i) => {
+        const x = -3.8 + i * 3.8;
+        const bay = makeRing(1.6, 1.8, AGENT_HEX[id], 0.8, 28);
+        bay.position.set(x, 0.23, 0);
+        pad.add(bay);
+
+        const cross = new THREE.LineSegments(
+          new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(x - 1.2, 0.24, 0),
+            new THREE.Vector3(x + 1.2, 0.24, 0),
+            new THREE.Vector3(x, 0.24, -1.2),
+            new THREE.Vector3(x, 0.24, 1.2),
+          ]),
+          new THREE.LineBasicMaterial({ color: AGENT_HEX[id], transparent: true, opacity: 0.6 })
+        );
+        pad.add(cross);
+      });
+
+      const markerMat = new THREE.MeshBasicMaterial({ color: HEX.success });
+      for (const [bx, bz] of [
+        [-7.5, -7.5],
+        [7.5, -7.5],
+        [-7.5, 7.5],
+        [7.5, 7.5],
+      ]) {
+        const marker = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), markerMat);
+        marker.position.set(bx, 0.7, bz);
+        pad.add(marker);
+      }
+
+      const padLabel = makeLabel('Launch pad', '#7b818a', 16);
+      padLabel.position.set(0, 5, 0);
+      pad.add(padLabel);
+      scene.add(pad);
+
+      // Survey overlay plane driven by the occupancy grid.
+      const texture = new THREE.CanvasTexture(grid.canvas);
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.NearestFilter;
+      texture.generateMipmaps = false;
+      overlayTextureRef.current = texture;
+
+      const overlay = new THREE.Mesh(
+        new THREE.PlaneGeometry(radius * 2, radius * 2),
+        new THREE.MeshBasicMaterial({
+          map: texture,
+          transparent: true,
+          opacity: overlayOpacity,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      );
+      overlay.rotation.x = -Math.PI / 2;
+      overlay.position.y = 0.1;
+      overlay.visible = showSurvey;
+      scene.add(overlay);
+      overlayMeshRef.current = overlay;
+
+      const gapGroup = new THREE.Group();
+      gapGroup.position.y = 0.18;
+      gapGroup.visible = showSurvey && showGapMarkers;
+      scene.add(gapGroup);
+      gapGroupRef.current = gapGroup;
+    },
+    // Initial visibility/opacity are read once; dedicated effects keep them live.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [grid]
+  );
+
+  const buildEdgeNode = useCallback((scene: THREE.Scene) => {
+    const group = new THREE.Group();
+    group.position.set(0, 0, -5);
+
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(8, 9, 2, 8),
+      new THREE.MeshStandardMaterial({ color: HEX.surface2, roughness: 0.8 })
+    );
+    base.position.y = 1;
+    group.add(base);
+
+    const mast = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.1, 2.4, 48, 6),
+      new THREE.MeshStandardMaterial({ color: HEX.surface4, metalness: 0.55, roughness: 0.45 })
+    );
+    mast.position.y = 25;
+    group.add(mast);
+
+    // Tri-sector active antenna units.
+    const panelMat = new THREE.MeshStandardMaterial({ color: HEX.ink4, roughness: 0.5 });
+    for (let i = 0; i < 3; i++) {
+      const angle = (i * Math.PI * 2) / 3;
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(1.2, 5, 2.5), panelMat);
+      panel.position.set(Math.cos(angle) * 3, 44, Math.sin(angle) * 3);
+      panel.rotation.y = -angle;
+      group.add(panel);
+    }
+
+    const dish = new THREE.Mesh(
+      new THREE.CylinderGeometry(2, 2, 0.5, 16),
+      new THREE.MeshStandardMaterial({ color: HEX.ink3, metalness: 0.3, roughness: 0.6 })
+    );
+    dish.position.set(0, 36, 1.8);
+    dish.rotation.x = Math.PI / 2;
+    group.add(dish);
+
+    const obstruction = new THREE.Mesh(
+      new THREE.SphereGeometry(0.7, 12, 12),
+      new THREE.MeshBasicMaterial({ color: HEX.danger })
+    );
+    obstruction.position.y = 50;
+    group.add(obstruction);
+
+    const label = makeLabel('Edge node · gNodeB-01', '#aab0b8', 30);
+    label.position.set(0, 56, 0);
+    group.add(label);
+
+    scene.add(group);
+  }, []);
+
+  const buildVehicles = useCallback((scene: THREE.Scene) => {
+    for (const id of AGENT_IDS) {
+      const color = AGENT_HEX[id];
+      const drone = new THREE.Group();
+      drone.userData.agentId = id;
+
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(2.4, 0.8, 3.2),
+        new THREE.MeshStandardMaterial({ color: HEX.surface3, metalness: 0.65, roughness: 0.35 })
+      );
+      drone.add(body);
+
+      const shell = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6, 0.3, 2.2),
+        new THREE.MeshStandardMaterial({ color, metalness: 0.4, roughness: 0.4 })
+      );
+      shell.position.y = 0.5;
+      drone.add(shell);
+
+      // Stereo camera pair.
+      const lensMat = new THREE.MeshBasicMaterial({ color: HEX.ink2 });
+      for (const lx of [-0.6, 0.6]) {
+        const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.5, 12), lensMat);
+        lens.rotation.x = Math.PI / 2;
+        lens.position.set(lx, -0.2, 1.7);
+        drone.add(lens);
+      }
+
+      const armMat = new THREE.MeshStandardMaterial({ color: HEX.surface4, metalness: 0.5 });
+      for (const yaw of [Math.PI / 4, -Math.PI / 4]) {
+        const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 3.6, 8), armMat);
+        arm.rotation.z = Math.PI / 2;
+        arm.rotation.y = yaw;
+        drone.add(arm);
+      }
+
+      const rotorMat = new THREE.MeshBasicMaterial({
+        color: HEX.ink4,
+        transparent: true,
+        opacity: 0.55,
+      });
+      for (const [mx, mz] of [
+        [1.3, 1.3],
+        [-1.3, 1.3],
+        [1.3, -1.3],
+        [-1.3, -1.3],
+      ]) {
+        const rotor = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.05, 0.2), rotorMat);
+        rotor.position.set(mx, 0.4, mz);
+        drone.add(rotor);
+        rotorsRef.current.push(rotor);
+      }
+
+      // Health ring under the airframe — green nominal, amber degraded, red held.
+      const statusRing = makeRing(2.5, 2.9, HEX.success, 0.85, 32);
+      statusRing.position.y = -0.7;
+      drone.add(statusRing);
+      statusRingsRef.current[id] = statusRing;
+
+      // Selection ring, shown for the vehicle selected anywhere in the app.
+      const selectRing = makeRing(3.5, 3.9, HEX.primary, 0.9, 32);
+      selectRing.position.y = -0.7;
+      selectRing.visible = false;
+      drone.add(selectRing);
+      selectRingsRef.current[id] = selectRing;
+
+      // Invisible pick target: the airframe is only ~3 m across at orbit range.
+      const pickTarget = new THREE.Mesh(
+        new THREE.SphereGeometry(5, 8, 8),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+      );
+      pickTarget.userData.agentId = id;
+      drone.add(pickTarget);
+
+      scene.add(drone);
+      droneGroupsRef.current[id] = drone;
+
+      const track = new THREE.Line(
+        new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85 })
+      );
+      track.frustumCulled = false;
+      scene.add(track);
+      trackLinesRef.current[id] = track;
+
+      const drop = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+        new THREE.LineDashedMaterial({
+          color: HEX.ink4,
+          dashSize: 2,
+          gapSize: 1.5,
+          transparent: true,
+          opacity: 0.4,
+        })
+      );
+      scene.add(drop);
+      dropLinesRef.current[id] = drop;
+
+      // Downward camera footprint, off by default and toggleable as a layer.
+      const fw = 12;
+      const fdist = 25;
+      const footprint = new THREE.LineSegments(
+        new THREE.BufferGeometry().setAttribute(
+          'position',
+          new THREE.Float32BufferAttribute(
+            [
+              0, 0, 0, -fw, -fdist, fw,
+              0, 0, 0, fw, -fdist, fw,
+              0, 0, 0, fw, -fdist, -fw,
+              0, 0, 0, -fw, -fdist, -fw,
+              -fw, -fdist, fw, fw, -fdist, fw,
+              fw, -fdist, fw, fw, -fdist, -fw,
+              fw, -fdist, -fw, -fw, -fdist, -fw,
+              -fw, -fdist, -fw, -fw, -fdist, fw,
+            ],
+            3
+          )
+        ),
+        new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.22 })
+      );
+      footprint.visible = false;
+      scene.add(footprint);
+      footprintsRef.current[id] = footprint;
+
+      const uplink = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(),
+          new THREE.Vector3(0, 48, -5),
+        ]),
+        new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.32 })
+      );
+      scene.add(uplink);
+      uplinksRef.current[id] = uplink;
+
+      const packet = new THREE.Mesh(
+        new THREE.SphereGeometry(0.6, 10, 10),
+        new THREE.MeshBasicMaterial({ color })
+      );
+      scene.add(packet);
+      packetsRef.current[id] = packet;
+
+      // Landmarks read white-grey for every vehicle; identity comes from tracks.
+      const cloud = new THREE.Points(
+        new THREE.BufferGeometry(),
+        new THREE.PointsMaterial({
+          size: 1.5,
+          color: HEX.landmark,
+          transparent: true,
+          opacity: 0.7,
+        })
+      );
+      cloud.frustumCulled = false;
+      scene.add(cloud);
+      landmarkCloudsRef.current[id] = cloud;
+    }
+  }, []);
+
+  /* ------------------------------------------------------------------ */
+  /* Scene lifecycle                                                     */
+  /* ------------------------------------------------------------------ */
+
   useEffect(() => {
-    if (!containerRef.current) return;
     const container = containerRef.current;
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+    if (!container) return;
 
-    // 1. Scene
+    // A scenario swap discards the old graph, so clear every registry first.
+    droneGroupsRef.current = {};
+    rotorsRef.current = [];
+    statusRingsRef.current = {};
+    selectRingsRef.current = {};
+    trackLinesRef.current = {};
+    footprintsRef.current = {};
+    dropLinesRef.current = {};
+    uplinksRef.current = {};
+    packetsRef.current = {};
+    landmarkCloudsRef.current = {};
+    matchLinesRef.current = null;
+    fusedCloudRef.current = null;
+    fusedCountRef.current = 0;
+    lastStampRef.current = {};
+
+    const width = container.clientWidth || 800;
+    const height = container.clientHeight || 480;
+
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#000000');
-    scene.fog = new THREE.FogExp2('#000000', 0.0022);
+    scene.background = new THREE.Color(HEX.surface0);
+    scene.fog = new THREE.FogExp2(HEX.surface0, 0.0017);
     sceneRef.current = scene;
 
-    // 2. Camera
-    const camera = new THREE.PerspectiveCamera(45, width / height, 1, 1000);
+    const camera = new THREE.PerspectiveCamera(45, width / height, 1, 1200);
     cameraRef.current = camera;
     updateCameraPosition();
 
-    // 3. Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: 'high-performance',
+    });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
@@ -137,1177 +974,437 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // 4. Lighting
-    const ambientLight = new THREE.AmbientLight(0x18181b, 1.2);
-    scene.add(ambientLight);
+    const ambient = new THREE.AmbientLight(HEX.surface4, 1.5);
+    scene.add(ambient);
 
-    const dirLight = new THREE.DirectionalLight(0xe4e4e7, 1.8);
-    dirLight.position.set(70, 90, 120);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 2048;
-    dirLight.shadow.mapSize.height = 2048;
-    dirLight.shadow.camera.near = 10;
-    dirLight.shadow.camera.far = 400;
-    dirLight.shadow.camera.left = -150;
-    dirLight.shadow.camera.right = 150;
-    dirLight.shadow.camera.top = 150;
-    dirLight.shadow.camera.bottom = -150;
-    scene.add(dirLight);
+    const key = new THREE.DirectionalLight(0xdfe3e8, 1.45);
+    key.position.set(80, 140, 120);
+    key.castShadow = true;
+    key.shadow.mapSize.width = 2048;
+    key.shadow.mapSize.height = 2048;
+    key.shadow.camera.near = 10;
+    key.shadow.camera.far = 420;
+    key.shadow.camera.left = -170;
+    key.shadow.camera.right = 170;
+    key.shadow.camera.top = 170;
+    key.shadow.camera.bottom = -170;
+    scene.add(key);
 
-    const blueHemisphere = new THREE.HemisphereLight(0x27272a, 0x000000, 0.7);
-    scene.add(blueHemisphere);
+    const sky = new THREE.HemisphereLight(HEX.surface3, HEX.surface0, 0.55);
+    scene.add(sky);
 
-    // 5. Build Environment
     buildEnvironment(scene, scenario);
+    buildEdgeNode(scene);
+    buildVehicles(scene);
 
-    // 6. Build 5G Base Station & MEC Tower
-    buildMECTower(scene);
-
-    // 7. Setup Drones & Visual Objects
-    buildDroneMeshes(scene);
-
-    // 8. Handle Resize
     const handleResize = () => {
-      if (!container || !camera || !renderer) return;
       const w = container.clientWidth;
       const h = container.clientHeight;
+      if (w === 0 || h === 0) return;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
     };
-
     const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(container);
 
-    // 9. Animation Loop
-    let animationFrameId: number;
-    let clock = new THREE.Clock();
-
+    const clock = new THREE.Clock();
+    let frameId = 0;
     const animate = () => {
-      animationFrameId = requestAnimationFrame(animate);
+      frameId = requestAnimationFrame(animate);
       const delta = clock.getDelta();
-      const elapsed = clock.getElapsedTime();
-
-      // Spin rotors
-      for (const rotor of rotorMeshesRef.current) {
-        rotor.rotation.z += delta * 45;
+      // Rotors turn only while the mission clock runs.
+      if (liveRef.current.isRunning) {
+        for (const rotor of rotorsRef.current) rotor.rotation.z += delta * 40;
       }
-
-      // Rotate radar sweep
-      if (radarSweepRef.current) {
-        radarSweepRef.current.rotation.z -= delta * 1.5;
-      }
-
-      // Pulsate coverage gap markers if visible
-      if (gapMarkersGroupRef.current && gapMarkersGroupRef.current.visible) {
-        const pulse = (Math.sin(elapsed * 4) + 1) * 0.5;
-        gapMarkersGroupRef.current.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).material) {
-            const mat = (child as THREE.Mesh).material as THREE.Material & { opacity?: number };
-            if (typeof mat.opacity === 'number') {
-              mat.opacity = 0.35 + pulse * 0.55;
-            }
-          }
-        });
-      }
-
       renderer.render(scene, camera);
     };
-
     animate();
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
-      if (heatmapTextureRef.current) {
-        heatmapTextureRef.current.dispose();
-      }
-      if (heatmapMeshRef.current) {
-        heatmapMeshRef.current.geometry.dispose();
-        (heatmapMeshRef.current.material as THREE.Material).dispose();
-      }
+      disposeSceneGraph(scene);
+      overlayTextureRef.current?.dispose();
+      overlayTextureRef.current = null;
+      overlayMeshRef.current = null;
+      gapGroupRef.current = null;
       if (renderer.domElement.parentNode) {
         renderer.domElement.parentNode.removeChild(renderer.domElement);
       }
       renderer.dispose();
+      sceneRef.current = null;
     };
-  }, [scenario]);
+  }, [scenario, buildEnvironment, buildEdgeNode, buildVehicles, updateCameraPosition]);
 
-  const updateCameraPosition = useCallback(() => {
-    if (!cameraRef.current) return;
-    const { radius, theta, phi } = cameraSphericalRef.current;
-    const target = cameraTargetRef.current;
+  /* ------------------------------------------------------------------ */
+  /* Overlay palette / opacity                                           */
+  /* ------------------------------------------------------------------ */
 
-    cameraRef.current.position.x = target.x + radius * Math.sin(phi) * Math.sin(theta);
-    cameraRef.current.position.y = target.y + radius * Math.cos(phi);
-    cameraRef.current.position.z = target.z + radius * Math.sin(phi) * Math.cos(theta);
-    cameraRef.current.lookAt(target);
-  }, []);
-
-  // Update dynamic objects when simState updates
   useEffect(() => {
-    if (!sceneRef.current) return;
+    paintSurveyGrid(grid, paletteMode);
+    if (overlayTextureRef.current) overlayTextureRef.current.needsUpdate = true;
+  }, [grid, paletteMode]);
+
+  useEffect(() => {
+    const overlay = overlayMeshRef.current;
+    if (!overlay) return;
+    overlay.visible = showSurvey;
+    (overlay.material as THREE.MeshBasicMaterial).opacity = overlayOpacity;
+    if (gapGroupRef.current) gapGroupRef.current.visible = showSurvey && showGapMarkers;
+  }, [showSurvey, overlayOpacity, showGapMarkers]);
+
+  /* ------------------------------------------------------------------ */
+  /* Per-tick simulation sync                                            */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
     const scene = sceneRef.current;
+    if (!scene) return;
 
-    // Update Drones, Trajectories, and Frustums
-    for (const [id, agent] of Object.entries(simState.agents) as [string, AAVTelemetry][]) {
-      const droneMesh = droneMeshesRef.current[id];
-      if (droneMesh) {
-        // Three.js: X is East/West, Y is Altitude, Z is North/South
-        droneMesh.position.set(agent.position.x, agent.position.z, -agent.position.y);
-        droneMesh.rotation.y = -THREE.MathUtils.degToRad(agent.heading);
-        droneMesh.rotation.z = THREE.MathUtils.degToRad(agent.orientation.roll);
-        droneMesh.rotation.x = THREE.MathUtils.degToRad(agent.orientation.pitch);
+    liveRef.current.isRunning = simState.isRunning;
 
-        // Update Drop line to ground
-        const dropLine = dropLinesRef.current[id];
-        if (dropLine) {
-          const positions = dropLine.geometry.attributes.position as THREE.BufferAttribute;
-          positions.setXYZ(0, agent.position.x, agent.position.z, -agent.position.y);
-          positions.setXYZ(1, agent.position.x, 0, -agent.position.y);
-          positions.needsUpdate = true;
-          dropLine.visible = agent.altitude > 1;
-        }
+    const agents = Object.entries(simState.agents) as [string, AAVTelemetry][];
+    const paused = simState.missionStatus === 'PAUSED';
 
-        // Camera Frustums omitted to prevent visual clutter
-        const frustum = cameraFrustumsRef.current[id];
-        if (frustum) {
-          frustum.visible = false;
-        }
+    for (const [id, agent] of agents) {
+      // World axes: x east, y altitude, z south — so world z is -position.y.
+      const wx = agent.position.x;
+      const wy = agent.position.z;
+      const wz = -agent.position.y;
 
-        // Update 5G Network Beam from Drone to MEC Tower (at x: 0, y: 50, z: -5)
-        const beam = networkBeamsRef.current[id];
-        if (beam) {
-          const pos = beam.geometry.attributes.position as THREE.BufferAttribute;
-          pos.setXYZ(0, agent.position.x, agent.position.z, -agent.position.y);
-          pos.setXYZ(1, 0, 48, -5);
-          pos.needsUpdate = true;
-          beam.visible = show5GLinks && agent.networkConnected;
-          // Stress mode color change
-          const mat = beam.material as THREE.LineBasicMaterial;
-          mat.color.set(simState.isStressTest ? '#f59e0b' : agent.color);
-        }
+      const drone = droneGroupsRef.current[id];
+      if (drone) {
+        drone.position.set(wx, wy, wz);
+        drone.rotation.y = -THREE.MathUtils.degToRad(agent.heading);
+        drone.rotation.z = THREE.MathUtils.degToRad(agent.orientation.roll);
+        drone.rotation.x = THREE.MathUtils.degToRad(agent.orientation.pitch);
+      }
 
-        // Update Flying 5G Packet Particle
-        const packet = packetParticlesRef.current[id];
-        if (packet) {
-          const t = (performance.now() / 1000 * (simState.isStressTest ? 0.8 : 2.2) + (id === 'AAV-01' ? 0 : id === 'AAV-02' ? 0.33 : 0.66)) % 1;
-          packet.position.set(
-            agent.position.x * (1 - t) + 0 * t,
-            agent.position.z * (1 - t) + 48 * t,
-            -agent.position.y * (1 - t) - 5 * t
+      const statusRing = statusRingsRef.current[id];
+      if (statusRing) {
+        const mat = statusRing.material as THREE.MeshBasicMaterial;
+        const hex =
+          agent.status === 'OFFLINE'
+            ? HEX.ink4
+            : paused
+            ? HEX.danger
+            : agent.slamMode === 'DEGRADED_ODOM' || !agent.networkConnected
+            ? HEX.warning
+            : HEX.success;
+        mat.color.setHex(hex);
+        statusRing.visible = agent.altitude > 0.5;
+      }
+
+      const selectRing = selectRingsRef.current[id];
+      if (selectRing) selectRing.visible = selectedAgentId === id;
+
+      const drop = dropLinesRef.current[id];
+      if (drop) {
+        const pos = drop.geometry.attributes.position as THREE.BufferAttribute;
+        pos.setXYZ(0, wx, wy, wz);
+        pos.setXYZ(1, wx, 0, wz);
+        pos.needsUpdate = true;
+        drop.computeLineDistances();
+        drop.visible = agent.altitude > 1;
+      }
+
+      const footprint = footprintsRef.current[id];
+      if (footprint) {
+        footprint.visible = showFootprints && agent.altitude > 2;
+        footprint.position.set(wx, wy, wz);
+        footprint.rotation.y = -THREE.MathUtils.degToRad(agent.heading);
+      }
+
+      const uplink = uplinksRef.current[id];
+      if (uplink) {
+        const pos = uplink.geometry.attributes.position as THREE.BufferAttribute;
+        pos.setXYZ(0, wx, wy, wz);
+        pos.setXYZ(1, 0, 48, -5);
+        pos.needsUpdate = true;
+        uplink.visible = showUplinks && agent.networkConnected;
+        const mat = uplink.material as THREE.LineBasicMaterial;
+        mat.color.setHex(simState.isStressTest ? HEX.danger : AGENT_HEX[id]);
+      }
+
+      const packet = packetsRef.current[id];
+      if (packet) {
+        // Phase advances on simulated time, so packets hold still when paused.
+        const speed = simState.isStressTest ? 0.35 : 0.9;
+        const offset = id === 'AAV-01' ? 0 : id === 'AAV-02' ? 0.33 : 0.66;
+        const t = (simState.simTimeSeconds * speed + offset) % 1;
+        packet.position.set(wx * (1 - t), wy * (1 - t) + 48 * t, wz * (1 - t) - 5 * t);
+        packet.visible = showUplinks && agent.networkConnected && agent.altitude > 2;
+        (packet.material as THREE.MeshBasicMaterial).color.setHex(
+          simState.isStressTest ? HEX.danger : AGENT_HEX[id]
+        );
+      }
+
+      const track = trackLinesRef.current[id];
+      if (track) {
+        if (agent.trajectory.length > 1) {
+          track.geometry.setFromPoints(
+            agent.trajectory.map((p) => new THREE.Vector3(p.x, p.z, -p.y))
           );
-          packet.visible = show5GLinks && agent.networkConnected && agent.altitude > 2;
-        }
-      }
-
-      // Update Trajectory Ribbon
-      let trajLine = trajectoryLinesRef.current[id];
-      if (trajLine && agent.trajectory.length > 1) {
-        const points = agent.trajectory.map((p) => new THREE.Vector3(p.x, p.z, -p.y));
-        trajLine.geometry.setFromPoints(points);
-        trajLine.visible = showTrajectories;
-      }
-    }
-
-    // Update 3D SLAM Point Cloud (Local Landmarks per Agent)
-    if (showPointCloud) {
-      for (const id of ['AAV-01', 'AAV-02', 'AAV-03']) {
-        const agentLandmarks = simState.landmarks.filter((l) => l.agentId === id);
-        let ptsObj = localPointsRef.current[id];
-
-        if (!ptsObj) {
-          const geom = new THREE.BufferGeometry();
-          const colorHex = id === 'AAV-01' ? 0x38bdf8 : id === 'AAV-02' ? 0xfbbf24 : 0x34d399;
-          const mat = new THREE.PointsMaterial({
-            size: 2.2,
-            color: colorHex,
-            transparent: true,
-            opacity: 0.85,
-          });
-          ptsObj = new THREE.Points(geom, mat);
-          scene.add(ptsObj);
-          localPointsRef.current[id] = ptsObj;
-        }
-
-        if (agentLandmarks.length > 0) {
-          const posArray = new Float32Array(agentLandmarks.length * 3);
-          for (let i = 0; i < agentLandmarks.length; i++) {
-            const p = agentLandmarks[i].position;
-            posArray[i * 3] = p.x;
-            posArray[i * 3 + 1] = p.z;
-            posArray[i * 3 + 2] = -p.y;
-          }
-          ptsObj.geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-          ptsObj.visible = true;
+          track.visible = showTracks;
         } else {
-          ptsObj.visible = false;
+          track.visible = false;
         }
-      }
-    } else {
-      for (const id in localPointsRef.current) {
-        localPointsRef.current[id].visible = false;
       }
     }
 
-    // Update Shared Landmark Correspondences (Yellow/Cyan link rays between AAVs during Loop Closure)
-    if (showPointCloud && simState.collabSlam.sharedMatches.length > 0) {
-      if (!sharedMatchesLinesRef.current) {
-        const geom = new THREE.BufferGeometry();
-        const mat = new THREE.LineBasicMaterial({ color: 0xfacc15, linewidth: 2, transparent: true, opacity: 0.9 });
-        const lines = new THREE.LineSegments(geom, mat);
+    // Landmark clouds — one buffer per vehicle, rewritten in place.
+    for (const id of AGENT_IDS) {
+      const cloud = landmarkCloudsRef.current[id];
+      if (!cloud) continue;
+      if (!showLandmarks) {
+        cloud.visible = false;
+        continue;
+      }
+      const own = simState.landmarks.filter((l) => l.agentId === id);
+      if (own.length === 0) {
+        cloud.visible = false;
+        continue;
+      }
+      const buffer = new Float32Array(own.length * 3);
+      for (let i = 0; i < own.length; i++) {
+        const p = own[i].position;
+        buffer[i * 3] = p.x;
+        buffer[i * 3 + 1] = p.z;
+        buffer[i * 3 + 2] = -p.y;
+      }
+      cloud.geometry.setAttribute('position', new THREE.BufferAttribute(buffer, 3));
+      cloud.visible = true;
+    }
+
+    // Inter-agent correspondences: orange, because fusion owns that colour.
+    const matches = simState.collabSlam.sharedMatches;
+    if (showLandmarks && matches.length > 0) {
+      if (!matchLinesRef.current) {
+        const lines = new THREE.LineSegments(
+          new THREE.BufferGeometry(),
+          new THREE.LineBasicMaterial({ color: HEX.primary, transparent: true, opacity: 0.8 })
+        );
+        lines.frustumCulled = false;
         scene.add(lines);
-        sharedMatchesLinesRef.current = lines;
+        matchLinesRef.current = lines;
       }
       const coords: number[] = [];
-      for (const match of simState.collabSlam.sharedMatches) {
-        coords.push(match.sourceLandmarkPos.x, match.sourceLandmarkPos.z, -match.sourceLandmarkPos.y);
-        coords.push(match.targetLandmarkPos.x, match.targetLandmarkPos.z, -match.targetLandmarkPos.y);
+      for (const m of matches) {
+        coords.push(m.sourceLandmarkPos.x, m.sourceLandmarkPos.z, -m.sourceLandmarkPos.y);
+        coords.push(m.targetLandmarkPos.x, m.targetLandmarkPos.z, -m.targetLandmarkPos.y);
       }
-      sharedMatchesLinesRef.current.geometry.setAttribute('position', new THREE.Float32BufferAttribute(coords, 3));
-      sharedMatchesLinesRef.current.visible = true;
-    } else if (sharedMatchesLinesRef.current) {
-      sharedMatchesLinesRef.current.visible = false;
+      matchLinesRef.current.geometry.setAttribute(
+        'position',
+        new THREE.Float32BufferAttribute(coords, 3)
+      );
+      matchLinesRef.current.visible = true;
+    } else if (matchLinesRef.current) {
+      matchLinesRef.current.visible = false;
     }
 
-    // Update Global Fused 3D Point Cloud (High density fused representation)
-    if (showPointCloud && simState.collabSlam.fusionStage === 'GLOBAL_FUSED') {
-      if (!globalFusedPointsRef.current) {
-        const geom = new THREE.BufferGeometry();
-        const mat = new THREE.PointsMaterial({
-          size: 2.8,
-          vertexColors: true,
-          transparent: true,
-          opacity: 0.95,
-        });
-        const pts = new THREE.Points(geom, mat);
-        scene.add(pts);
-        globalFusedPointsRef.current = pts;
+    // Unified map: single-hue elevation ramp, rebuilt only when it changes.
+    const fused = simState.fusedPointCloud;
+    const isFused = simState.collabSlam.fusionStage === 'GLOBAL_FUSED';
+    if (showLandmarks && isFused && fused.length > 0) {
+      if (!fusedCloudRef.current) {
+        const cloud = new THREE.Points(
+          new THREE.BufferGeometry(),
+          new THREE.PointsMaterial({
+            size: 2.2,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.95,
+          })
+        );
+        cloud.frustumCulled = false;
+        scene.add(cloud);
+        fusedCloudRef.current = cloud;
+      }
+      if (fusedCountRef.current !== fused.length) {
+        const positions = new Float32Array(fused.length * 3);
+        const colors = new Float32Array(fused.length * 3);
+        for (let i = 0; i < fused.length; i++) {
+          const p = fused[i].position;
+          positions[i * 3] = p.x;
+          positions[i * 3 + 1] = p.z;
+          positions[i * 3 + 2] = -p.y;
+          const t = Math.min(1, Math.max(0, p.z / 45));
+          colors[i * 3] = 0.55 + 0.43 * t;
+          colors[i * 3 + 1] = 0.28 + 0.37 * t;
+          colors[i * 3 + 2] = 0.12 + 0.28 * t;
+        }
+        const geom = fusedCloudRef.current.geometry;
+        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        fusedCountRef.current = fused.length;
+      }
+      fusedCloudRef.current.visible = true;
+    } else if (fusedCloudRef.current) {
+      fusedCloudRef.current.visible = false;
+    }
+
+    /* ---------------- survey accumulation ---------------- */
+
+    // A reset clears the accumulated survey so coverage restarts honestly.
+    if (simState.missionStatus === 'IDLE' && simState.simTimeSeconds < 0.2) {
+      if (lastStampRef.current['AAV-01'] !== null || grid.mask.some((v) => v !== 0)) {
+        grid.mask.fill(0);
+        lastStampRef.current = { 'AAV-01': null, 'AAV-02': null, 'AAV-03': null };
+        paintSurveyGrid(grid, paletteMode);
+        if (overlayTextureRef.current) overlayTextureRef.current.needsUpdate = true;
+        lastMeasureRef.current = 0;
+      }
+    }
+
+    let stamped = false;
+    for (const [id, agent] of agents) {
+      const bit = AGENT_BIT[id] ?? 0;
+      if (!bit || agent.altitude < 0.5) continue;
+
+      const last = lastStampRef.current[id];
+      if (!last) {
+        // First stamp of a run also lays down the track flown so far.
+        for (const p of agent.trajectory) {
+          if (stampFootprint(grid, p.x, p.y, bit)) stamped = true;
+        }
+        if (stampFootprint(grid, agent.position.x, agent.position.y, bit)) stamped = true;
+        lastStampRef.current[id] = { x: agent.position.x, y: agent.position.y };
+        continue;
       }
 
-      if (simState.fusedPointCloud.length > 0) {
-        const posArray = new Float32Array(simState.fusedPointCloud.length * 3);
-        const colArray = new Float32Array(simState.fusedPointCloud.length * 3);
+      if (Math.hypot(agent.position.x - last.x, agent.position.y - last.y) >= STAMP_STEP_M) {
+        if (stampFootprint(grid, agent.position.x, agent.position.y, bit)) stamped = true;
+        lastStampRef.current[id] = { x: agent.position.x, y: agent.position.y };
+      }
+    }
 
-        for (let i = 0; i < simState.fusedPointCloud.length; i++) {
-          const pt = simState.fusedPointCloud[i].position;
-          posArray[i * 3] = pt.x;
-          posArray[i * 3 + 1] = pt.z;
-          posArray[i * 3 + 2] = -pt.y;
+    if (stamped) {
+      paintSurveyGrid(grid, paletteMode);
+      if (overlayTextureRef.current) overlayTextureRef.current.needsUpdate = true;
+    }
 
-          // Height-based elevation coloring for unified 3D map (Cyan -> Emerald -> Gold -> Orange)
-          const normH = Math.min(1, Math.max(0, pt.z / 45));
-          if (normH < 0.3) {
-            colArray[i * 3] = 0.2;
-            colArray[i * 3 + 1] = 0.8;
-            colArray[i * 3 + 2] = 1.0; // Cyan
-          } else if (normH < 0.6) {
-            colArray[i * 3] = 0.2;
-            colArray[i * 3 + 1] = 0.9;
-            colArray[i * 3 + 2] = 0.5; // Green
-          } else if (normH < 0.85) {
-            colArray[i * 3] = 0.95;
-            colArray[i * 3 + 1] = 0.85;
-            colArray[i * 3 + 2] = 0.2; // Yellow
-          } else {
-            colArray[i * 3] = 1.0;
-            colArray[i * 3 + 1] = 0.45;
-            colArray[i * 3 + 2] = 0.2; // Orange
+    // Remeasure on a slow cadence; publish only when the figures move.
+    const now = performance.now();
+    if (now - lastMeasureRef.current >= MEASURE_INTERVAL_MS) {
+      lastMeasureRef.current = now;
+      const measured = measureCoverage(grid);
+      const prev = publishedRef.current;
+      const changed =
+        !prev ||
+        prev.cellsMapped !== measured.cellsMapped ||
+        prev.gapCount !== measured.gapCount ||
+        prev.cellsTotal !== measured.cellsTotal;
+
+      if (changed) {
+        publishedRef.current = measured;
+        setCoverage(measured);
+        onCoverageChange?.(measured);
+
+        if (gapGroupRef.current) {
+          const group = gapGroupRef.current;
+          while (group.children.length > 0) {
+            const child = group.children[0];
+            group.remove(child);
+            const mesh = child as THREE.Mesh;
+            if (mesh.geometry) mesh.geometry.dispose();
+            const mat = mesh.material as THREE.Material | undefined;
+            if (mat) mat.dispose();
+            child.traverse((sub) => {
+              const subMesh = sub as THREE.Mesh;
+              if (subMesh.geometry) subMesh.geometry.dispose();
+              const subMat = subMesh.material as THREE.Material | undefined;
+              if (subMat) subMat.dispose();
+            });
+          }
+
+          for (const gap of measured.gaps) {
+            const marker = new THREE.Group();
+            marker.position.set(gap.x, 0, -gap.y);
+
+            const ring = makeRing(15, 17, HEX.warning, 0.45, 40);
+            marker.add(ring);
+
+            const pole = new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(0, 9, 0),
+              ]),
+              new THREE.LineDashedMaterial({
+                color: HEX.warning,
+                dashSize: 1.4,
+                gapSize: 1.4,
+                transparent: true,
+                opacity: 0.6,
+              })
+            );
+            pole.computeLineDistances();
+            marker.add(pole);
+
+            const cap = new THREE.Mesh(
+              new THREE.OctahedronGeometry(1.2, 0),
+              new THREE.MeshBasicMaterial({ color: HEX.warning, transparent: true, opacity: 0.85 })
+            );
+            cap.position.y = 9;
+            marker.add(cap);
+
+            group.add(marker);
           }
         }
-
-        globalFusedPointsRef.current.geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-        globalFusedPointsRef.current.geometry.setAttribute('color', new THREE.BufferAttribute(colArray, 3));
-        globalFusedPointsRef.current.visible = true;
-      }
-    } else if (globalFusedPointsRef.current) {
-      globalFusedPointsRef.current.visible = false;
-    }
-
-    // ==========================================
-    // Update Ground Heatmap & Coverage Density
-    // ==========================================
-    if (simState.missionStatus === 'IDLE' || simState.simTimeSeconds < 0.2) {
-      exploredPointsRef.current = { 'AAV-01': [], 'AAV-02': [], 'AAV-03': [] };
-    }
-
-    // Accumulate dense ground coverage points from AAV positions and trajectories
-    for (const [id, agent] of Object.entries(simState.agents) as [string, AAVTelemetry][]) {
-      if (!exploredPointsRef.current[id]) {
-        exploredPointsRef.current[id] = [];
-      }
-      const history = exploredPointsRef.current[id];
-      if (agent.trajectory && agent.trajectory.length > 0) {
-        if (history.length === 0) {
-          history.push(...agent.trajectory.map((p) => ({ x: p.x, y: p.y })));
-        } else {
-          const last = history[history.length - 1];
-          const d = Math.hypot(agent.position.x - last.x, agent.position.y - last.y);
-          if (d > 1.5) {
-            history.push({ x: agent.position.x, y: agent.position.y });
-          }
-        }
       }
     }
 
-    // Render Canvas and update Three.js texture
-    if (heatmapCanvasRef.current && heatmapTextureRef.current) {
-      renderHeatmapCanvas(
-        heatmapCanvasRef.current,
-        simState.agents,
-        exploredPointsRef.current,
-        scenario.groundRadius,
-        heatmapMode
-      );
-      heatmapTextureRef.current.needsUpdate = true;
-    }
-
-    if (heatmapMeshRef.current) {
-      heatmapMeshRef.current.visible = showHeatmap;
-      const mat = heatmapMeshRef.current.material as THREE.MeshBasicMaterial;
-      if (mat) {
-        mat.opacity = heatmapOpacity;
-      }
-    }
-
-    // Compute coverage percentages and identify gaps
-    const calculatedMetrics = computeSectorCoverage(
-      scenario,
-      simState.agents,
-      exploredPointsRef.current
-    );
-    setCoverageMetrics(calculatedMetrics);
-
-    // Update 3D gap markers on terrain
-    if (gapMarkersGroupRef.current) {
-      update3DGapMarkers(
-        gapMarkersGroupRef.current,
-        calculatedMetrics.gapsList,
-        showHeatmap && showCoverageGaps
-      );
-    }
-
-    // Camera follow mode updates
+    // Follow mode keeps the orbit target locked to the vehicle.
     if (cameraMode.startsWith('AAV-')) {
-      const followAgent = simState.agents[cameraMode];
-      if (followAgent) {
-        cameraTargetRef.current.set(followAgent.position.x, followAgent.position.z, -followAgent.position.y);
+      const followed = simState.agents[cameraMode];
+      if (followed) {
+        targetRef.current.set(followed.position.x, followed.position.z, -followed.position.y);
         updateCameraPosition();
       }
     }
   }, [
     simState,
-    showTrajectories,
-    showPointCloud,
-    show5GLinks,
-    showHeatmap,
-    heatmapMode,
-    heatmapOpacity,
-    showCoverageGaps,
-    scenario,
+    grid,
+    paletteMode,
+    showTracks,
+    showLandmarks,
+    showUplinks,
+    showFootprints,
+    selectedAgentId,
     cameraMode,
+    onCoverageChange,
     updateCameraPosition,
   ]);
 
-  // ==========================================
-  // Area Exploration & Sector Coverage Analysis
-  // ==========================================
-  function computeSectorCoverage(
-    scen: Scenario,
-    agents: Record<string, AAVTelemetry>,
-    exploredPoints: Record<string, { x: number; y: number }[]>
-  ): CoverageMetrics {
-    const sectors = scen.sectors || [];
-    const sectorResults: Record<string, number> = { Alpha: 0, Bravo: 0, Charlie: 0 };
-    const gapsList: CoverageGapInfo[] = [];
+  /* ------------------------------------------------------------------ */
+  /* Camera presets, orbit, picking, fullscreen                          */
+  /* ------------------------------------------------------------------ */
 
-    // Aggregate all points from agents and explored history
-    const allTrajectoryPoints: { x: number; y: number }[] = [];
-    for (const [id, agent] of Object.entries(agents)) {
-      if (agent.trajectory) {
-        for (const p of agent.trajectory) {
-          allTrajectoryPoints.push({ x: p.x, y: p.y });
-        }
-      }
-      const history = exploredPoints[id];
-      if (history) {
-        for (const p of history) {
-          allTrajectoryPoints.push({ x: p.x, y: p.y });
-        }
-      }
-    }
-
-    const sensorRadius = 20; // 20m sensor footprint
-
-    for (const sector of sectors) {
-      const probes: { x: number; y: number; quadrant: string }[] = [];
-      probes.push({ x: sector.center.x, y: sector.center.y, quadrant: 'Core' });
-
-      // Concentric rings of test probes
-      const ringFractions = [0.3, 0.6, 0.85];
-      const ringCounts = [6, 8, 10];
-
-      for (let r = 0; r < ringFractions.length; r++) {
-        const rad = sector.radius * ringFractions[r];
-        const count = ringCounts[r];
-        for (let i = 0; i < count; i++) {
-          const angle = (i * Math.PI * 2) / count;
-          const px = sector.center.x + Math.cos(angle) * rad;
-          const py = sector.center.y + Math.sin(angle) * rad;
-          const quad =
-            Math.cos(angle) >= 0
-              ? Math.sin(angle) >= 0 ? 'NE' : 'SE'
-              : Math.sin(angle) >= 0 ? 'NW' : 'SW';
-          probes.push({ x: px, y: py, quadrant: quad });
-        }
-      }
-
-      let covered = 0;
-      const unvisited: { x: number; y: number; quadrant: string }[] = [];
-
-      for (const probe of probes) {
-        let isCovered = false;
-        for (let i = 0; i < allTrajectoryPoints.length; i++) {
-          const pt = allTrajectoryPoints[i];
-          const dx = pt.x - probe.x;
-          const dy = pt.y - probe.y;
-          if (dx * dx + dy * dy <= sensorRadius * sensorRadius) {
-            isCovered = true;
-            break;
-          }
-        }
-        if (isCovered) {
-          covered++;
-        } else {
-          unvisited.push(probe);
-        }
-      }
-
-      const coveragePct = Math.min(100, Math.round((covered / probes.length) * 100));
-      sectorResults[sector.id] = coveragePct;
-
-      if (coveragePct < 72 && unvisited.length > 0) {
-        const avgX = unvisited.reduce((s, p) => s + p.x, 0) / unvisited.length;
-        const avgY = unvisited.reduce((s, p) => s + p.y, 0) / unvisited.length;
-
-        const quadCounts: Record<string, number> = {};
-        for (const p of unvisited) {
-          quadCounts[p.quadrant] = (quadCounts[p.quadrant] || 0) + 1;
-        }
-        let topQuad = 'Perimeter';
-        let maxQ = 0;
-        for (const [q, cnt] of Object.entries(quadCounts)) {
-          if (cnt > maxQ) {
-            maxQ = cnt;
-            topQuad = q;
-          }
-        }
-
-        gapsList.push({
-          sector: sector.id,
-          quadrant: `${topQuad} Quadrant`,
-          x: avgX,
-          y: avgY,
-          unmappedPercent: 100 - coveragePct,
-          assignedAgent: sector.assignedAgent || 'AAV',
-        });
-      }
-    }
-
-    const alpha = sectorResults.Alpha ?? 0;
-    const bravo = sectorResults.Bravo ?? 0;
-    const charlie = sectorResults.Charlie ?? 0;
-    const overall = Math.round((alpha + bravo + charlie) / 3);
-
-    const totalM2 = Math.round(
-      ((alpha * Math.PI * 48 * 48) + (bravo * Math.PI * 52 * 52) + (charlie * Math.PI * 50 * 50)) / 100
-    ) + (overall > 0 ? 2100 : 0);
-
-    return {
-      overallPercent: overall,
-      alphaPercent: alpha,
-      bravoPercent: bravo,
-      charliePercent: charlie,
-      totalAreaM2: totalM2,
-      gapsCount: gapsList.length,
-      gapsList,
-    };
-  }
-
-  // ==========================================
-  // Render Dynamic Terrain Heatmap Canvas
-  // ==========================================
-  function renderHeatmapCanvas(
-    canvas: HTMLCanvasElement,
-    agents: Record<string, AAVTelemetry>,
-    exploredPoints: Record<string, { x: number; y: number }[]>,
-    groundRadius: number,
-    mode: 'THERMAL' | 'AGENT_SPECTRUM'
-  ) {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const w = canvas.width;
-    const h = canvas.height;
-
-    // Clear to fully transparent (0 opacity in unvisited gaps)
-    ctx.clearRect(0, 0, w, h);
-
-    const toX = (wx: number) => ((wx + groundRadius) / (2 * groundRadius)) * w;
-    const toY = (wy: number) => (1 - (wy + groundRadius) / (2 * groundRadius)) * h;
-    const sensorRadiusPx = Math.max(16, Math.round((19 / (2 * groundRadius)) * w));
-
-    // Overlapping coverage increases density with additive blending
-    ctx.globalCompositeOperation = 'lighter';
-
-    for (const [id, agent] of Object.entries(agents)) {
-      const history = exploredPoints[id] || [];
-      const points =
-        history.length > 0
-          ? history
-          : agent.trajectory
-          ? agent.trajectory.map((p) => ({ x: p.x, y: p.y }))
-          : [];
-
-      if (points.length === 0) continue;
-
-      const agentColor =
-        id === 'AAV-01'
-          ? { r: 56, g: 189, b: 248 }
-          : id === 'AAV-02'
-          ? { r: 251, g: 191, b: 36 }
-          : { r: 52, g: 211, b: 153 };
-
-      // 1. Draw continuous swath corridor ribbon
-      if (points.length > 1) {
-        ctx.beginPath();
-        ctx.moveTo(toX(points[0].x), toY(points[0].y));
-        for (let i = 1; i < points.length; i++) {
-          ctx.lineTo(toX(points[i].x), toY(points[i].y));
-        }
-        ctx.lineWidth = sensorRadiusPx * 1.5;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        if (mode === 'THERMAL') {
-          ctx.strokeStyle = 'rgba(6, 182, 212, 0.20)';
-        } else {
-          ctx.strokeStyle = `rgba(${agentColor.r}, ${agentColor.g}, ${agentColor.b}, 0.22)`;
-        }
-        ctx.stroke();
-      }
-
-      // 2. Soft radial gradient disks along trajectory waypoints
-      const step = Math.max(1, Math.floor(points.length / 75));
-      for (let i = 0; i < points.length; i += step) {
-        const pt = points[i];
-        const px = toX(pt.x);
-        const py = toY(pt.y);
-        const recency = (i + 1) / points.length;
-        const alphaScale = 0.5 + recency * 0.5;
-
-        const grad = ctx.createRadialGradient(px, py, 2, px, py, sensorRadiusPx);
-
-        if (mode === 'THERMAL') {
-          // Thermal density: Amber core -> Emerald mid -> Cyan fringe -> Transparent edge
-          grad.addColorStop(0, `rgba(245, 158, 11, ${0.40 * alphaScale})`);
-          grad.addColorStop(0.35, `rgba(16, 185, 129, ${0.30 * alphaScale})`);
-          grad.addColorStop(0.7, `rgba(6, 182, 212, ${0.18 * alphaScale})`);
-          grad.addColorStop(1, 'rgba(6, 182, 212, 0)');
-        } else {
-          grad.addColorStop(0, `rgba(${agentColor.r}, ${agentColor.g}, ${agentColor.b}, ${0.45 * alphaScale})`);
-          grad.addColorStop(0.5, `rgba(${agentColor.r}, ${agentColor.g}, ${agentColor.b}, ${0.25 * alphaScale})`);
-          grad.addColorStop(1, `rgba(${agentColor.r}, ${agentColor.g}, ${agentColor.b}, 0)`);
-        }
-
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(px, py, sensorRadiusPx, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // 3. Current active sensor footprint
-      const cpx = toX(agent.position.x);
-      const cpy = toY(agent.position.y);
-      const currGrad = ctx.createRadialGradient(cpx, cpy, 3, cpx, cpy, sensorRadiusPx * 1.3);
-
-      if (mode === 'THERMAL') {
-        currGrad.addColorStop(0, 'rgba(255, 255, 255, 0.65)');
-        currGrad.addColorStop(0.3, 'rgba(245, 158, 11, 0.50)');
-        currGrad.addColorStop(0.7, 'rgba(6, 182, 212, 0.28)');
-        currGrad.addColorStop(1, 'rgba(6, 182, 212, 0)');
+  const applyCameraMode = useCallback(
+    (mode: CameraMode) => {
+      setCameraMode(mode);
+      if (mode === 'TACTICAL') {
+        orbitRef.current = { radius: 200, theta: 0.8, phi: 1.05 };
+        targetRef.current.set(0, 0, 5);
+      } else if (mode === 'TOP_DOWN') {
+        orbitRef.current = { radius: 215, theta: 0, phi: 0.06 };
+        targetRef.current.set(0, 0, 0);
+      } else if (mode === 'MEC') {
+        orbitRef.current = { radius: 110, theta: 2.2, phi: 1.25 };
+        targetRef.current.set(0, 28, -5);
       } else {
-        currGrad.addColorStop(0, 'rgba(255, 255, 255, 0.70)');
-        currGrad.addColorStop(0.4, `rgba(${agentColor.r}, ${agentColor.g}, ${agentColor.b}, 0.55)`);
-        currGrad.addColorStop(1, `rgba(${agentColor.r}, ${agentColor.g}, ${agentColor.b}, 0)`);
+        // Following a vehicle also selects it, so every panel agrees.
+        orbitRef.current = { radius: 48, theta: 0.9, phi: 1.15 };
+        onSelectAgent?.(mode);
       }
-
-      ctx.fillStyle = currGrad;
-      ctx.beginPath();
-      ctx.arc(cpx, cpy, sensorRadiusPx * 1.3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.globalCompositeOperation = 'source-over';
-  }
-
-  // ==========================================
-  // Update 3D Coverage Gap Markers on Terrain
-  // ==========================================
-  function update3DGapMarkers(
-    group: THREE.Group,
-    gapsList: CoverageGapInfo[],
-    visible: boolean
-  ) {
-    group.visible = visible;
-    if (!visible) return;
-
-    // Clear previous children
-    while (group.children.length > 0) {
-      const child = group.children[0];
-      group.remove(child);
-      if ((child as any).geometry) (child as any).geometry.dispose();
-      if ((child as any).material) (child as any).material.dispose();
-    }
-
-    for (const gap of gapsList) {
-      const markerGroup = new THREE.Group();
-      markerGroup.position.set(gap.x, 0, -gap.y);
-
-      // Hazard boundary ring on terrain
-      const ringGeom = new THREE.RingGeometry(16, 18.5, 32);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: 0xf59e0b,
-        transparent: true,
-        opacity: 0.65,
-        side: THREE.DoubleSide,
-      });
-      const ring = new THREE.Mesh(ringGeom, ringMat);
-      ring.rotation.x = -Math.PI / 2;
-      markerGroup.add(ring);
-
-      // Inner dashed zone indicator
-      const innerRingGeom = new THREE.RingGeometry(10.5, 12, 24);
-      const innerRingMat = new THREE.MeshBasicMaterial({
-        color: 0xef4444,
-        transparent: true,
-        opacity: 0.5,
-        side: THREE.DoubleSide,
-      });
-      const innerRing = new THREE.Mesh(innerRingGeom, innerRingMat);
-      innerRing.rotation.x = -Math.PI / 2;
-      markerGroup.add(innerRing);
-
-      // Vertical dashed beacon line
-      const poleGeom = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 10, 0),
-      ]);
-      const poleMat = new THREE.LineDashedMaterial({
-        color: 0xf59e0b,
-        dashSize: 1.5,
-        gapSize: 1.5,
-        transparent: true,
-        opacity: 0.8,
-      });
-      const pole = new THREE.Line(poleGeom, poleMat);
-      pole.computeLineDistances();
-      markerGroup.add(pole);
-
-      // Floating hazard beacon octahedron
-      const beaconGeom = new THREE.OctahedronGeometry(1.4, 0);
-      const beaconMat = new THREE.MeshBasicMaterial({
-        color: 0xf59e0b,
-        transparent: true,
-        opacity: 0.9,
-      });
-      const beacon = new THREE.Mesh(beaconGeom, beaconMat);
-      beacon.position.y = 10;
-      markerGroup.add(beacon);
-
-      group.add(markerGroup);
-    }
-  }
-
-  // Environment Construction
-  function buildEnvironment(scene: THREE.Scene, scen: Scenario) {
-    // Ground plane with subtle military grid texture
-    const groundGeom = new THREE.PlaneGeometry(scen.groundRadius * 2, scen.groundRadius * 2, 40, 40);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x020203,
-      roughness: 0.95,
-      metalness: 0.05,
-    });
-    const ground = new THREE.Mesh(groundGeom, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    scene.add(ground);
-
-    // Tactical Grid
-    const grid = new THREE.GridHelper(scen.groundRadius * 2, 80, 0x27272a, 0x09090b);
-    grid.position.y = 0.05;
-    scene.add(grid);
-
-    // Concentric Range Rings (50m, 100m, 150m)
-    for (const radius of [40, 80, 120, 160]) {
-      const ringGeom = new THREE.RingGeometry(radius - 0.25, radius + 0.25, 64);
-      const ringMat = new THREE.MeshBasicMaterial({ color: 0x27272a, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
-      const ring = new THREE.Mesh(ringGeom, ringMat);
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.y = 0.1;
-      scene.add(ring);
-    }
-
-    // Sectors boundaries (Alpha, Bravo, Charlie)
-    const sectorColors = { Alpha: 0x38bdf8, Bravo: 0xfbbf24, Charlie: 0x34d399 };
-    for (const sector of scen.sectors) {
-      const col = sectorColors[sector.id] || 0x64748b;
-
-      // Sector perimeter circle
-      const circGeom = new THREE.RingGeometry(sector.radius - 0.4, sector.radius + 0.4, 48);
-      const circMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
-      const circ = new THREE.Mesh(circGeom, circMat);
-      circ.rotation.x = -Math.PI / 2;
-      circ.position.set(sector.center.x, 0.2, -sector.center.y);
-      scene.add(circ);
-
-      // Sector fill zone (subtle glow)
-      const fillGeom = new THREE.CircleGeometry(sector.radius, 48);
-      const fillMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.04, side: THREE.DoubleSide });
-      const fill = new THREE.Mesh(fillGeom, fillMat);
-      fill.rotation.x = -Math.PI / 2;
-      fill.position.set(sector.center.x, 0.15, -sector.center.y);
-      scene.add(fill);
-
-      // Sector center beacon marker
-      const markerGeom = new THREE.CylinderGeometry(1.5, 1.5, 0.4, 16);
-      const markerMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.8 });
-      const marker = new THREE.Mesh(markerGeom, markerMat);
-      marker.position.set(sector.center.x, 0.3, -sector.center.y);
-      scene.add(marker);
-    }
-
-    // 3D Buildings with rooftop detailing and rubble
-    const buildingMat = new THREE.MeshStandardMaterial({
-      color: 0x0c0c0e,
-      roughness: 0.8,
-      metalness: 0.2,
-    });
-    const edgeMat = new THREE.LineBasicMaterial({ color: 0x52525b, transparent: true, opacity: 0.5 });
-    const rubbleMat = new THREE.MeshStandardMaterial({
-      color: 0x141416,
-      roughness: 0.95,
-      metalness: 0.05,
-    });
-    const hvacMat = new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.6 });
-
-    for (const b of scen.buildings) {
-      if (b.type === 'tower') continue; // MEC Tower is built separately
-      const geom = new THREE.BoxGeometry(b.width, b.height, b.depth);
-      const mesh = new THREE.Mesh(geom, b.type === 'rubble' ? rubbleMat : buildingMat);
-      mesh.position.set(b.x, b.height / 2, -b.y);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      scene.add(mesh);
-
-      // CAD/Wireframe edges
-      const edges = new THREE.EdgesGeometry(geom);
-      const line = new THREE.LineSegments(edges, edgeMat);
-      line.position.copy(mesh.position);
-      scene.add(line);
-
-      // Rooftop structures for taller buildings
-      if (b.height > 25 && b.type !== 'rubble') {
-        // Rooftop elevator penthouse / HVAC
-        const hvacGeom = new THREE.BoxGeometry(b.width * 0.35, 3.5, b.depth * 0.35);
-        const hvac = new THREE.Mesh(hvacGeom, hvacMat);
-        hvac.position.set(b.x, b.height + 1.75, -b.y);
-        scene.add(hvac);
-
-        // Rooftop warning antenna
-        const antennaGeom = new THREE.CylinderGeometry(0.1, 0.1, 6, 6);
-        const antennaMat = new THREE.MeshBasicMaterial({ color: 0x64748b });
-        const antenna = new THREE.Mesh(antennaGeom, antennaMat);
-        antenna.position.set(b.x + b.width * 0.3, b.height + 3, -b.y + b.depth * 0.3);
-        scene.add(antenna);
-
-        const beaconGeom = new THREE.SphereGeometry(0.4, 8, 8);
-        const beaconMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-        const beacon = new THREE.Mesh(beaconGeom, beaconMat);
-        beacon.position.set(b.x + b.width * 0.3, b.height + 6, -b.y + b.depth * 0.3);
-        scene.add(beacon);
-      } else if (b.type === 'rubble') {
-        // Angled collapse slabs
-        const slabGeom = new THREE.BoxGeometry(b.width * 0.6, 1.2, b.depth * 0.5);
-        const slab = new THREE.Mesh(slabGeom, rubbleMat);
-        slab.position.set(b.x + 2, b.height + 0.5, -b.y - 1);
-        slab.rotation.set(0.2, 0.4, -0.3);
-        scene.add(slab);
-      }
-    }
-
-    // Asphalt Roads (cross intersections)
-    const roadMat = new THREE.MeshBasicMaterial({ color: 0x0a101d });
-    const roadX = new THREE.Mesh(new THREE.PlaneGeometry(scen.groundRadius * 1.8, 14), roadMat);
-    roadX.rotation.x = -Math.PI / 2;
-    roadX.position.set(0, 0.06, 0);
-    scene.add(roadX);
-
-    const roadZ = new THREE.Mesh(new THREE.PlaneGeometry(14, scen.groundRadius * 1.8), roadMat);
-    roadZ.rotation.x = -Math.PI / 2;
-    roadZ.position.set(0, 0.07, 0);
-    scene.add(roadZ);
-
-    // Dashed Road Centerlines
-    const stripeMat = new THREE.LineDashedMaterial({ color: 0x94a3b8, dashSize: 3, gapSize: 3 });
-    const stripeGeomX = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(-scen.groundRadius * 0.9, 0.08, 0),
-      new THREE.Vector3(scen.groundRadius * 0.9, 0.08, 0),
-    ]);
-    const stripeX = new THREE.Line(stripeGeomX, stripeMat);
-    stripeX.computeLineDistances();
-    scene.add(stripeX);
-
-    const stripeGeomZ = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0, 0.09, -scen.groundRadius * 0.9),
-      new THREE.Vector3(0, 0.09, scen.groundRadius * 0.9),
-    ]);
-    const stripeZ = new THREE.Line(stripeGeomZ, stripeMat);
-    stripeZ.computeLineDistances();
-    scene.add(stripeZ);
-
-    // ==========================================
-    // Central Staging & Common Launch Pad (x: 0, z: 12)
-    // ==========================================
-    const padGroup = new THREE.Group();
-    padGroup.position.set(0, 0.1, 12);
-
-    // Main octagonal reinforced concrete launch platform
-    const padPlatformGeom = new THREE.CylinderGeometry(9, 9.5, 0.2, 8);
-    const padPlatformMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8, metalness: 0.2 });
-    const padPlatform = new THREE.Mesh(padPlatformGeom, padPlatformMat);
-    padPlatform.position.y = 0.1;
-    padGroup.add(padPlatform);
-
-    // Platform hazard border ring
-    const hazardRingGeom = new THREE.RingGeometry(8.2, 8.8, 32);
-    const hazardRingMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, side: THREE.DoubleSide });
-    const hazardRing = new THREE.Mesh(hazardRingGeom, hazardRingMat);
-    hazardRing.rotation.x = -Math.PI / 2;
-    hazardRing.position.y = 0.21;
-    padGroup.add(hazardRing);
-
-    // Inner landing circle
-    const innerRingGeom = new THREE.RingGeometry(5.2, 5.5, 32);
-    const innerRingMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide });
-    const innerRing = new THREE.Mesh(innerRingGeom, innerRingMat);
-    innerRing.rotation.x = -Math.PI / 2;
-    innerRing.position.y = 0.22;
-    padGroup.add(innerRing);
-
-    // 3 Distinct Common Launch Bays (Alpha: x=-3.8, Bravo: x=0, Charlie: x=3.8)
-    const bayConfigs = [
-      { id: 'PAD-01', x: -3.8, color: 0x38bdf8, label: 'BAY 1 (ALPHA)' },
-      { id: 'PAD-02', x: 0, color: 0xfbbf24, label: 'BAY 2 (BRAVO)' },
-      { id: 'PAD-03', x: 3.8, color: 0x34d399, label: 'BAY 3 (CHARLIE)' },
-    ];
-
-    for (const bay of bayConfigs) {
-      const bayRingGeom = new THREE.RingGeometry(1.6, 1.8, 24);
-      const bayRingMat = new THREE.MeshBasicMaterial({ color: bay.color, side: THREE.DoubleSide });
-      const bayRing = new THREE.Mesh(bayRingGeom, bayRingMat);
-      bayRing.rotation.x = -Math.PI / 2;
-      bayRing.position.set(bay.x, 0.23, 0);
-      padGroup.add(bayRing);
-
-      // Pad crosshairs
-      const crosshairGeom = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(bay.x - 1.2, 0.24, 0),
-        new THREE.Vector3(bay.x + 1.2, 0.24, 0),
-        new THREE.Vector3(bay.x, 0.24, -1.2),
-        new THREE.Vector3(bay.x, 0.24, 1.2),
-      ]);
-      const crosshairMat = new THREE.LineBasicMaterial({ color: bay.color, transparent: true, opacity: 0.7 });
-      const crosshair = new THREE.LineSegments(crosshairGeom, crosshairMat);
-      padGroup.add(crosshair);
-    }
-
-    // 4 Corner Runway Guidance Beacons (Pulsating green/amber lights)
-    const beaconCoords = [
-      [-7.5, -7.5],
-      [7.5, -7.5],
-      [-7.5, 7.5],
-      [7.5, 7.5],
-    ];
-    for (const [bx, bz] of beaconCoords) {
-      const postGeom = new THREE.CylinderGeometry(0.2, 0.2, 0.8, 8);
-      const postMat = new THREE.MeshStandardMaterial({ color: 0x475569 });
-      const post = new THREE.Mesh(postGeom, postMat);
-      post.position.set(bx, 0.4, bz);
-      padGroup.add(post);
-
-      const lightGeom = new THREE.SphereGeometry(0.3, 8, 8);
-      const lightMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
-      const light = new THREE.Mesh(lightGeom, lightMat);
-      light.position.set(bx, 0.8, bz);
-      padGroup.add(light);
-    }
-
-    // Taxiway connecting launch pad to main crossroads
-    const taxiwayGeom = new THREE.PlaneGeometry(8, 12);
-    const taxiwayMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
-    const taxiway = new THREE.Mesh(taxiwayGeom, taxiwayMat);
-    taxiway.rotation.x = -Math.PI / 2;
-    taxiway.position.set(0, 0.05, -6);
-    padGroup.add(taxiway);
-
-    scene.add(padGroup);
-
-    // ==========================================
-    // Ground Heatmap Overlay Plane (Area Explored Density)
-    // ==========================================
-    const heatmapCanvas = document.createElement('canvas');
-    heatmapCanvas.width = 512;
-    heatmapCanvas.height = 512;
-    heatmapCanvasRef.current = heatmapCanvas;
-
-    const heatmapTexture = new THREE.CanvasTexture(heatmapCanvas);
-    heatmapTexture.minFilter = THREE.LinearFilter;
-    heatmapTexture.magFilter = THREE.LinearFilter;
-    heatmapTexture.generateMipmaps = false;
-    heatmapTextureRef.current = heatmapTexture;
-
-    const heatmapGeom = new THREE.PlaneGeometry(scen.groundRadius * 2, scen.groundRadius * 2);
-    const heatmapMat = new THREE.MeshBasicMaterial({
-      map: heatmapTexture,
-      transparent: true,
-      opacity: heatmapOpacity,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-      side: THREE.DoubleSide,
-    });
-    const heatmapMesh = new THREE.Mesh(heatmapGeom, heatmapMat);
-    heatmapMesh.rotation.x = -Math.PI / 2;
-    heatmapMesh.position.y = 0.11;
-    heatmapMesh.visible = showHeatmap;
-    scene.add(heatmapMesh);
-    heatmapMeshRef.current = heatmapMesh;
-
-    // Coverage Gap 3D Markers Group
-    const gapGroup = new THREE.Group();
-    gapGroup.name = 'coverage-gaps-group';
-    gapGroup.position.y = 0.16;
-    gapGroup.visible = showHeatmap && showCoverageGaps;
-    scene.add(gapGroup);
-    gapMarkersGroupRef.current = gapGroup;
-  }
-
-  // Build Central 5G Base Station & MEC Edge Tower
-  function buildMECTower(scene: THREE.Scene) {
-    const group = new THREE.Group();
-    group.position.set(0, 0, -5);
-
-    // Tower base platform
-    const baseGeom = new THREE.CylinderGeometry(8, 9, 2, 8);
-    const baseMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.6 });
-    const base = new THREE.Mesh(baseGeom, baseMat);
-    base.position.y = 1;
-    group.add(base);
-
-    // Lattice mast
-    const mastGeom = new THREE.CylinderGeometry(1.2, 2.5, 48, 6);
-    const mastMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.6, roughness: 0.4 });
-    const mast = new THREE.Mesh(mastGeom, mastMat);
-    mast.position.y = 25;
-    group.add(mast);
-
-    // 5G Active Antenna Units (AAU) panels (Tri-sector)
-    const panelGeom = new THREE.BoxGeometry(1.2, 5, 2.5);
-    const panelMat = new THREE.MeshStandardMaterial({ color: 0x0ea5e9, roughness: 0.3 });
-    for (let i = 0; i < 3; i++) {
-      const angle = (i * Math.PI * 2) / 3;
-      const panel = new THREE.Mesh(panelGeom, panelMat);
-      panel.position.set(Math.cos(angle) * 3, 44, Math.sin(angle) * 3);
-      panel.rotation.y = -angle;
-      group.add(panel);
-    }
-
-    // Top Beacon
-    const beaconGeom = new THREE.SphereGeometry(0.8, 16, 16);
-    const beaconMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-    const beacon = new THREE.Mesh(beaconGeom, beaconMat);
-    beacon.position.y = 50;
-    group.add(beacon);
-
-    // Microwave dish
-    const dishGeom = new THREE.CylinderGeometry(2, 2, 0.6, 16);
-    const dishMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8 });
-    const dish = new THREE.Mesh(dishGeom, dishMat);
-    dish.position.set(0, 36, 1.8);
-    dish.rotation.x = Math.PI / 2;
-    group.add(dish);
-
-    // Rotating Radar Sweep Ring
-    const radarGeom = new THREE.RingGeometry(2, 140, 32, 1, 0, Math.PI / 3);
-    const radarMat = new THREE.MeshBasicMaterial({
-      color: 0x0ea5e9,
-      transparent: true,
-      opacity: 0.12,
-      side: THREE.DoubleSide,
-    });
-    const radar = new THREE.Mesh(radarGeom, radarMat);
-    radar.rotation.x = -Math.PI / 2;
-    radar.position.y = 0.4;
-    radarSweepRef.current = radar;
-    group.add(radar);
-
-    scene.add(group);
-  }
-
-  // Build Procedural Quadcopter Drone Models
-  function buildDroneMeshes(scene: THREE.Scene) {
-    const agentConfigs = [
-      { id: 'AAV-01', color: 0x38bdf8 },
-      { id: 'AAV-02', color: 0xfbbf24 },
-      { id: 'AAV-03', color: 0x34d399 },
-    ];
-
-    for (const cfg of agentConfigs) {
-      const drone = new THREE.Group();
-
-      // Main fuselage
-      const bodyGeom = new THREE.BoxGeometry(2.4, 0.8, 3.2);
-      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, metalness: 0.8, roughness: 0.2 });
-      const body = new THREE.Mesh(bodyGeom, bodyMat);
-      drone.add(body);
-
-      // Top accent shield with agent color
-      const shieldGeom = new THREE.BoxGeometry(1.6, 0.3, 2.2);
-      const shieldMat = new THREE.MeshStandardMaterial({ color: cfg.color, roughness: 0.3, metalness: 0.5 });
-      const shield = new THREE.Mesh(shieldGeom, shieldMat);
-      shield.position.y = 0.5;
-      drone.add(shield);
-
-      // Front Stereo SLAM Camera lens
-      const camGeom = new THREE.CylinderGeometry(0.3, 0.3, 0.6, 12);
-      const camMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
-      const leftCam = new THREE.Mesh(camGeom, camMat);
-      leftCam.rotation.x = Math.PI / 2;
-      leftCam.position.set(-0.6, -0.2, 1.7);
-      drone.add(leftCam);
-
-      const rightCam = new THREE.Mesh(camGeom, camMat);
-      rightCam.rotation.x = Math.PI / 2;
-      rightCam.position.set(0.6, -0.2, 1.7);
-      drone.add(rightCam);
-
-      // 4 Carbon Arms & Rotor Motors
-      const armGeom = new THREE.CylinderGeometry(0.12, 0.12, 3.6, 8);
-      const armMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.6 });
-
-      const arm1 = new THREE.Mesh(armGeom, armMat);
-      arm1.rotation.z = Math.PI / 2;
-      arm1.rotation.y = Math.PI / 4;
-      drone.add(arm1);
-
-      const arm2 = new THREE.Mesh(armGeom, armMat);
-      arm2.rotation.z = Math.PI / 2;
-      arm2.rotation.y = -Math.PI / 4;
-      drone.add(arm2);
-
-      // 4 Rotor blades
-      const rotorGeom = new THREE.BoxGeometry(2.4, 0.05, 0.2);
-      const rotorMat = new THREE.MeshBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.7 });
-      const motorOffsets = [
-        [1.3, 0.4, 1.3],
-        [-1.3, 0.4, 1.3],
-        [1.3, 0.4, -1.3],
-        [-1.3, 0.4, -1.3],
-      ];
-
-      for (const [mx, my, mz] of motorOffsets) {
-        const rotor = new THREE.Mesh(rotorGeom, rotorMat);
-        rotor.position.set(mx, my, mz);
-        drone.add(rotor);
-        rotorMeshesRef.current.push(rotor);
-      }
-
-      scene.add(drone);
-      droneMeshesRef.current[cfg.id] = drone;
-
-      // Trajectory line
-      const trajGeom = new THREE.BufferGeometry();
-      const trajMat = new THREE.LineBasicMaterial({ color: cfg.color, linewidth: 2, transparent: true, opacity: 0.75 });
-      const trajLine = new THREE.Line(trajGeom, trajMat);
-      scene.add(trajLine);
-      trajectoryLinesRef.current[cfg.id] = trajLine;
-
-      // Drop line to ground
-      const dropGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)]);
-      const dropMat = new THREE.LineDashedMaterial({ color: cfg.color, dashSize: 2, gapSize: 1.5, transparent: true, opacity: 0.4 });
-      const dropLine = new THREE.Line(dropGeom, dropMat);
-      scene.add(dropLine);
-      dropLinesRef.current[cfg.id] = dropLine;
-
-      // Downward SLAM Camera Frustum Wireframe
-      const frustumGeom = new THREE.BufferGeometry();
-      // Frustum apex at (0,0,0), base projecting downwards (z forward, y downward)
-      const fw = 12, fh = 8, fdist = 25;
-      const fVerts = [
-        0, 0, 0,   -fw, -fdist, fw,
-        0, 0, 0,   fw, -fdist, fw,
-        0, 0, 0,   fw, -fdist, -fw,
-        0, 0, 0,   -fw, -fdist, -fw,
-        -fw, -fdist, fw,   fw, -fdist, fw,
-        fw, -fdist, fw,   fw, -fdist, -fw,
-        fw, -fdist, -fw,  -fw, -fdist, -fw,
-        -fw, -fdist, -fw, -fw, -fdist, fw,
-      ];
-      frustumGeom.setAttribute('position', new THREE.Float32BufferAttribute(fVerts, 3));
-      const frustumMat = new THREE.LineBasicMaterial({ color: cfg.color, transparent: true, opacity: 0.25 });
-      const frustum = new THREE.LineSegments(frustumGeom, frustumMat);
-      scene.add(frustum);
-      cameraFrustumsRef.current[cfg.id] = frustum;
-
-      // 5G Network Beam to MEC
-      const beamGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 48, -5)]);
-      const beamMat = new THREE.LineBasicMaterial({ color: cfg.color, transparent: true, opacity: 0.4 });
-      const beam = new THREE.Line(beamGeom, beamMat);
-      scene.add(beam);
-      networkBeamsRef.current[cfg.id] = beam;
-
-      // 5G Flying Packet Particle
-      const packetGeom = new THREE.SphereGeometry(0.8, 12, 12);
-      const packetMat = new THREE.MeshBasicMaterial({ color: cfg.color });
-      const packet = new THREE.Mesh(packetGeom, packetMat);
-      scene.add(packet);
-      packetParticlesRef.current[cfg.id] = packet;
-    }
-  }
-
-  // Camera preset controls
-  const handleSetCameraMode = (mode: typeof cameraMode) => {
-    setCameraMode(mode);
-    if (mode === 'TACTICAL') {
-      cameraSphericalRef.current = { radius: 190, theta: 0.8, phi: 1.1 };
-      cameraTargetRef.current = new THREE.Vector3(0, 0, 5);
       updateCameraPosition();
-    } else if (mode === 'TOP_DOWN') {
-      cameraSphericalRef.current = { radius: 210, theta: 0, phi: 0.05 };
-      cameraTargetRef.current = new THREE.Vector3(0, 0, 0);
-      updateCameraPosition();
-    } else if (mode === 'MEC') {
-      cameraSphericalRef.current = { radius: 120, theta: 2.2, phi: 1.3 };
-      cameraTargetRef.current = new THREE.Vector3(0, 30, -5);
-      updateCameraPosition();
-    }
-  };
+    },
+    [onSelectAgent, updateCameraPosition]
+  );
 
-  // Mouse interaction for Orbit
   const handleMouseDown = (e: React.MouseEvent) => {
     isDraggingRef.current = true;
+    dragDistRef.current = 0;
     prevMouseRef.current = { x: e.clientX, y: e.clientY };
   };
 
@@ -1316,9 +1413,13 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
     const dx = e.clientX - prevMouseRef.current.x;
     const dy = e.clientY - prevMouseRef.current.y;
     prevMouseRef.current = { x: e.clientX, y: e.clientY };
+    dragDistRef.current += Math.abs(dx) + Math.abs(dy);
 
-    cameraSphericalRef.current.theta -= dx * 0.008;
-    cameraSphericalRef.current.phi = Math.max(0.05, Math.min(Math.PI / 2 - 0.05, cameraSphericalRef.current.phi - dy * 0.008));
+    orbitRef.current.theta -= dx * 0.008;
+    orbitRef.current.phi = Math.max(
+      0.05,
+      Math.min(Math.PI / 2 - 0.04, orbitRef.current.phi - dy * 0.008)
+    );
     updateCameraPosition();
   };
 
@@ -1326,453 +1427,400 @@ export const Global3DMap: React.FC<Global3DMapProps> = ({
     isDraggingRef.current = false;
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    cameraSphericalRef.current.radius = Math.max(30, Math.min(350, cameraSphericalRef.current.radius + e.deltaY * 0.15));
-    updateCameraPosition();
+  /** Click selects a vehicle; drags are ignored. */
+  const handleClick = (e: React.MouseEvent) => {
+    if (dragDistRef.current > 5) return;
+    const container = containerRef.current;
+    const camera = cameraRef.current;
+    if (!container || !camera || !onSelectAgent) return;
+
+    const rect = container.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(ndc, camera);
+
+    const hits = raycaster.intersectObjects(Object.values(droneGroupsRef.current), true);
+    if (hits.length === 0) return;
+    let obj: THREE.Object3D | null = hits[0].object;
+    while (obj && !obj.userData.agentId) obj = obj.parent;
+    if (obj?.userData.agentId) onSelectAgent(obj.userData.agentId as string);
   };
+
+  // Wheel zoom needs a non-passive listener to cancel page scroll.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      orbitRef.current.radius = Math.max(
+        26,
+        Math.min(360, orbitRef.current.radius + e.deltaY * 0.15)
+      );
+      updateCameraPosition();
+    };
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => container.removeEventListener('wheel', onWheel);
+  }, [updateCameraPosition]);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void container.requestFullscreen?.();
+    }
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Render                                                             */
+  /* ------------------------------------------------------------------ */
+
+  const activeLayers = [showSurvey, showTracks, showLandmarks, showUplinks, showFootprints].filter(
+    Boolean
+  ).length;
+  const coveragePercent = Math.round(coverage.overallPercent);
+  const isFusedNow = simState.collabSlam.fusionStage === 'GLOBAL_FUSED';
 
   return (
     <div
       ref={containerRef}
       id="global-3d-map-container"
-      className="relative w-full h-full min-h-[420px] bg-black overflow-hidden select-none cursor-grab active:cursor-grabbing border border-zinc-800"
+      className="relative h-full w-full cursor-grab select-none overflow-hidden bg-surface-0 active:cursor-grabbing"
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
-      onWheel={handleWheel}
+      onClick={handleClick}
     >
-      {/* Top Left: Map Layers Dropdown Menu */}
-      <div className="absolute top-2.5 left-2.5 z-30 font-sans select-none pointer-events-auto">
-        <button
-          id="btn-map-layers-dropdown"
-          onClick={(e) => {
-            e.stopPropagation();
-            setIsLayersDropdownOpen(!isLayersDropdownOpen);
-          }}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-sm border backdrop-blur-md shadow-lg transition-all cursor-pointer text-xs font-semibold ${
-            isLayersDropdownOpen
-              ? 'bg-zinc-900 border-cyan-500 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.2)]'
-              : 'bg-black/90 border-zinc-800 text-zinc-100 hover:border-zinc-700 hover:bg-zinc-950'
-          }`}
-        >
-          <Layers className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Layers</span>
-          <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.2 rounded-xs bg-zinc-900 border border-zinc-800 text-zinc-400 font-medium">
-            {[showHeatmap, showTrajectories, showPointCloud, show5GLinks].filter(Boolean).length}/4
-          </span>
-          <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${isLayersDropdownOpen ? 'rotate-180 text-cyan-400' : ''}`} />
-        </button>
-
-        {/* Dropdown Menu Popup */}
-        {isLayersDropdownOpen && (
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="absolute top-full left-0 mt-1.5 w-64 bg-zinc-950/95 backdrop-blur-md border border-zinc-800 rounded-sm shadow-2xl p-2.5 z-40 space-y-1.5 font-sans animate-in fade-in zoom-in-95 duration-150"
+      {/* Top bar: layer menu on the left, view controls on the right */}
+      <div className="pointer-events-none absolute inset-x-2 top-2 z-30 flex items-start justify-between gap-2">
+        <div className="pointer-events-auto relative" onMouseDown={(e) => e.stopPropagation()}>
+          <Button
+            id="btn-map-layers"
+            size="sm"
+            variant="neutral"
+            active={isLayersOpen}
+            icon={<Layers className="h-3.5 w-3.5" />}
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsLayersOpen((open) => !open);
+            }}
           >
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 px-1">
-              <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wide">Map Layers</span>
-              <span className="text-[10px] text-zinc-500 font-mono tabular-nums">
-                {[showHeatmap, showTrajectories, showPointCloud, show5GLinks].filter(Boolean).length} Active
-              </span>
-            </div>
-
-            {/* Layer Toggles List */}
-            <div className="space-y-1 pt-1">
-              {/* Heatmap Toggle */}
-              <button
-                id="toggle-dropdown-heatmap"
-                onClick={() => setShowHeatmap(!showHeatmap)}
-                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
-                  showHeatmap
-                    ? 'bg-zinc-900/90 border-amber-500/60 text-amber-300 font-semibold'
-                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Scan className={`w-3.5 h-3.5 ${showHeatmap ? 'text-amber-400' : 'text-zinc-500'}`} />
-                  <span>Area Density Heatmap</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-mono tabular-nums px-1 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-700/60">
-                    {coverageMetrics.overallPercent}%
-                  </span>
-                  <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${showHeatmap ? 'bg-amber-500 border-amber-400' : 'border-zinc-700'}`}>
-                    {showHeatmap && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
-                  </div>
-                </div>
-              </button>
-
-              {/* Trajectories Toggle */}
-              <button
-                id="toggle-dropdown-trajectories"
-                onClick={() => setShowTrajectories(!showTrajectories)}
-                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
-                  showTrajectories
-                    ? 'bg-zinc-900/90 border-cyan-500/60 text-cyan-300 font-semibold'
-                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Compass className={`w-3.5 h-3.5 ${showTrajectories ? 'text-cyan-400' : 'text-zinc-500'}`} />
-                  <span>AAV Trajectories</span>
-                </div>
-                <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${showTrajectories ? 'bg-cyan-500 border-cyan-400' : 'border-zinc-700'}`}>
-                  {showTrajectories && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
-                </div>
-              </button>
-
-              {/* Point Cloud Toggle */}
-              <button
-                id="toggle-dropdown-pointcloud"
-                onClick={() => setShowPointCloud(!showPointCloud)}
-                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
-                  showPointCloud
-                    ? 'bg-zinc-900/90 border-cyan-500/60 text-cyan-300 font-semibold'
-                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Radio className={`w-3.5 h-3.5 ${showPointCloud ? 'text-cyan-400' : 'text-zinc-500'}`} />
-                  <span>3D SLAM Point Cloud</span>
-                </div>
-                <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${showPointCloud ? 'bg-cyan-500 border-cyan-400' : 'border-zinc-700'}`}>
-                  {showPointCloud && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
-                </div>
-              </button>
-
-              {/* 5G Links Toggle */}
-              <button
-                id="toggle-dropdown-5glinks"
-                onClick={() => setShow5GLinks(!show5GLinks)}
-                className={`w-full flex items-center justify-between p-2 rounded-xs border text-xs transition-all cursor-pointer ${
-                  show5GLinks
-                    ? 'bg-zinc-900/90 border-cyan-500/60 text-cyan-300 font-semibold'
-                    : 'bg-black/60 border-zinc-850 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Wifi className={`w-3.5 h-3.5 ${show5GLinks ? 'text-cyan-400' : 'text-zinc-500'}`} />
-                  <span>5G RF Mesh Links</span>
-                </div>
-                <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${show5GLinks ? 'bg-cyan-500 border-cyan-400' : 'border-zinc-700'}`}>
-                  {show5GLinks && <span className="w-1.5 h-1.5 rounded-full bg-black" />}
-                </div>
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Top Right: Thinner Camera View Selector & Fullscreen */}
-      <div className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 bg-black/90 backdrop-blur-md p-0.5 rounded-xs border border-zinc-800 text-[10px] shadow-lg">
-        <button
-          id="btn-cam-tactical"
-          onClick={() => handleSetCameraMode('TACTICAL')}
-          className={`px-1.5 py-0.5 rounded-xs font-mono font-medium transition-colors cursor-pointer leading-tight ${
-            cameraMode === 'TACTICAL' ? 'bg-cyan-600 text-black font-bold' : 'text-zinc-300 hover:bg-zinc-900'
-          }`}
-        >
-          TACTICAL
-        </button>
-        <button
-          id="btn-cam-topdown"
-          onClick={() => handleSetCameraMode('TOP_DOWN')}
-          className={`px-1.5 py-0.5 rounded-xs font-mono font-medium transition-colors cursor-pointer leading-tight ${
-            cameraMode === 'TOP_DOWN' ? 'bg-cyan-600 text-black font-bold' : 'text-zinc-300 hover:bg-zinc-900'
-          }`}
-        >
-          TOP-DOWN
-        </button>
-        <button
-          id="btn-cam-mec"
-          onClick={() => handleSetCameraMode('MEC')}
-          className={`px-1.5 py-0.5 rounded-xs font-mono font-medium transition-colors cursor-pointer leading-tight ${
-            cameraMode === 'MEC' ? 'bg-cyan-600 text-black font-bold' : 'text-zinc-300 hover:bg-zinc-900'
-          }`}
-        >
-          MEC TOWER
-        </button>
-        <div className="h-3 w-px bg-zinc-800 mx-0.5" />
-        <button
-          id="btn-cam-aav01"
-          onClick={() => handleSetCameraMode('AAV-01')}
-          className={`px-1.5 py-0.5 rounded-xs font-mono text-[10px] transition-colors cursor-pointer leading-tight ${
-            cameraMode === 'AAV-01' ? 'bg-sky-500 text-black font-bold' : 'text-sky-400 hover:bg-zinc-900'
-          }`}
-        >
-          AAV-1
-        </button>
-        <button
-          id="btn-cam-aav02"
-          onClick={() => handleSetCameraMode('AAV-02')}
-          className={`px-1.5 py-0.5 rounded-xs font-mono text-[10px] transition-colors cursor-pointer leading-tight ${
-            cameraMode === 'AAV-02' ? 'bg-amber-500 text-black font-bold' : 'text-amber-400 hover:bg-zinc-900'
-          }`}
-        >
-          AAV-2
-        </button>
-        <button
-          id="btn-cam-aav03"
-          onClick={() => handleSetCameraMode('AAV-03')}
-          className={`px-1.5 py-0.5 rounded-xs font-mono text-[10px] transition-colors cursor-pointer leading-tight ${
-            cameraMode === 'AAV-03' ? 'bg-emerald-500 text-black font-bold' : 'text-emerald-400 hover:bg-zinc-900'
-          }`}
-        >
-          AAV-3
-        </button>
-      </div>
-
-      {/* Top Right (Below Cam Modes): Area Exploration & Coverage Monitor HUD */}
-      <div
-        id="coverage-monitor-panel"
-        className="absolute top-9 right-2.5 z-10 w-80 bg-black/92 backdrop-blur-md border border-zinc-800 rounded-sm shadow-2xl font-mono text-xs overflow-hidden transition-all duration-150"
-      >
-        {/* Panel Header */}
-        <div
-          onClick={() => setIsCoveragePanelOpen(!isCoveragePanelOpen)}
-          className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-900/80 border-b border-zinc-800/80 cursor-pointer hover:bg-zinc-800/60 transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            <Scan className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
-            <span className="font-bold text-zinc-200 tracking-wider text-[11px]">AREA EXPLORED & GAPS</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-700/60 font-bold">
-              {coverageMetrics.overallPercent}% COVERED
-            </span>
-            {isCoveragePanelOpen ? (
-              <ChevronUp className="w-3.5 h-3.5 text-zinc-400" />
+            <span>Layers</span>
+            <span className="telemetry text-3xs text-ink-3">{activeLayers}/5</span>
+            {isLayersOpen ? (
+              <ChevronUp className="h-3 w-3 text-ink-3" />
             ) : (
-              <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+              <ChevronDown className="h-3 w-3 text-ink-3" />
             )}
-          </div>
-        </div>
+          </Button>
 
-        {/* Panel Body */}
-        {isCoveragePanelOpen && (
-          <div className="p-2.5 flex flex-col gap-2.5 text-[11px]">
-            {/* Top Coverage Status Summary */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-zinc-400 text-[10px] uppercase tracking-wider">Operational Swath Coverage</span>
-                <span className="text-zinc-300 font-bold">{coverageMetrics.totalAreaM2.toLocaleString()} m²</span>
+          {isLayersOpen && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="absolute left-0 top-full z-40 mt-1 w-60 rounded border border-line bg-surface-0/95 p-2"
+            >
+              <div className="mb-1.5 flex items-center justify-between border-b border-line pb-1.5">
+                <span className="text-2xs font-medium text-ink-2">Map layers</span>
+                <span className="telemetry text-3xs text-ink-4">{activeLayers} active</span>
               </div>
-              <div className="h-2 w-full bg-zinc-950 rounded-full overflow-hidden border border-zinc-800 p-0.2">
-                <div
-                  className="h-full bg-gradient-to-r from-cyan-500 via-emerald-400 to-amber-400 rounded-full transition-all duration-300"
-                  style={{ width: `${coverageMetrics.overallPercent}%` }}
+              <div className="space-y-1">
+                <LayerToggle
+                  id="toggle-layer-survey"
+                  icon={<Scan className="h-3.5 w-3.5" />}
+                  label="Survey coverage"
+                  hint={`${coveragePercent}%`}
+                  active={showSurvey}
+                  onToggle={() => setShowSurvey((v) => !v)}
+                />
+                <LayerToggle
+                  id="toggle-layer-tracks"
+                  icon={<Compass className="h-3.5 w-3.5" />}
+                  label="Vehicle tracks"
+                  active={showTracks}
+                  onToggle={() => setShowTracks((v) => !v)}
+                />
+                <LayerToggle
+                  id="toggle-layer-landmarks"
+                  icon={<Radio className="h-3.5 w-3.5" />}
+                  label="SLAM landmarks"
+                  active={showLandmarks}
+                  onToggle={() => setShowLandmarks((v) => !v)}
+                />
+                <LayerToggle
+                  id="toggle-layer-uplinks"
+                  icon={<Wifi className="h-3.5 w-3.5" />}
+                  label="5G uplinks"
+                  active={showUplinks}
+                  onToggle={() => setShowUplinks((v) => !v)}
+                />
+                <LayerToggle
+                  id="toggle-layer-footprints"
+                  icon={<Eye className="h-3.5 w-3.5" />}
+                  label="Camera footprint"
+                  active={showFootprints}
+                  onToggle={() => setShowFootprints((v) => !v)}
                 />
               </div>
-              <div className="flex items-center justify-between mt-1 text-[10px]">
-                <span className={coverageMetrics.gapsCount > 0 ? 'text-amber-400 font-semibold' : 'text-emerald-400 font-semibold'}>
-                  {coverageMetrics.gapsCount > 0
-                    ? `⚠️ ${coverageMetrics.gapsCount} COVERAGE GAP${coverageMetrics.gapsCount > 1 ? 'S' : ''} IDENTIFIED`
-                    : '✓ FULL SECTOR SURVEY COMPLETE'}
-                </span>
-                <span className="text-zinc-500">{coverageMetrics.overallPercent}% / 100%</span>
-              </div>
             </div>
+          )}
+        </div>
 
-            {/* Per-Sector Exploration Breakdown */}
-            <div className="space-y-1.5 bg-zinc-950/70 p-2 rounded-xs border border-zinc-800/60">
-              <div className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold mb-1">
-                Sector Density Saturation
-              </div>
-              {/* Alpha */}
-              <div>
-                <div className="flex justify-between text-[10px] mb-0.5">
-                  <span className="text-sky-300 font-medium">Sector Alpha (AAV-01)</span>
-                  <span className="text-sky-400 font-bold">{coverageMetrics.alphaPercent}%</span>
-                </div>
-                <div className="h-1.5 w-full bg-zinc-900 rounded-full overflow-hidden">
-                  <div className="h-full bg-sky-400 transition-all duration-200" style={{ width: `${coverageMetrics.alphaPercent}%` }} />
-                </div>
-              </div>
-              {/* Bravo */}
-              <div>
-                <div className="flex justify-between text-[10px] mb-0.5">
-                  <span className="text-amber-300 font-medium">Sector Bravo (AAV-02)</span>
-                  <span className="text-amber-400 font-bold">{coverageMetrics.bravoPercent}%</span>
-                </div>
-                <div className="h-1.5 w-full bg-zinc-900 rounded-full overflow-hidden">
-                  <div className="h-full bg-amber-400 transition-all duration-200" style={{ width: `${coverageMetrics.bravoPercent}%` }} />
-                </div>
-              </div>
-              {/* Charlie */}
-              <div>
-                <div className="flex justify-between text-[10px] mb-0.5">
-                  <span className="text-emerald-300 font-medium">Sector Charlie (AAV-03)</span>
-                  <span className="text-emerald-400 font-bold">{coverageMetrics.charliePercent}%</span>
-                </div>
-                <div className="h-1.5 w-full bg-zinc-900 rounded-full overflow-hidden">
-                  <div className="h-full bg-emerald-400 transition-all duration-200" style={{ width: `${coverageMetrics.charliePercent}%` }} />
-                </div>
-              </div>
-            </div>
+        <div
+          className="pointer-events-auto flex flex-wrap items-center justify-end gap-1"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <Segmented<CameraMode>
+            aria-label="Camera preset"
+            value={cameraMode}
+            onChange={applyCameraMode}
+            options={[
+              { value: 'TACTICAL', label: 'Orbit', id: 'btn-cam-tactical', title: CAMERA_MODE_LABEL.TACTICAL },
+              { value: 'TOP_DOWN', label: 'Top-down', id: 'btn-cam-topdown', title: CAMERA_MODE_LABEL.TOP_DOWN },
+              { value: 'MEC', label: 'Edge node', id: 'btn-cam-mec', title: CAMERA_MODE_LABEL.MEC },
+            ]}
+          />
+          <Segmented<CameraMode>
+            aria-label="Follow vehicle"
+            mono
+            value={cameraMode}
+            onChange={applyCameraMode}
+            options={AGENT_IDS.map((id) => ({
+              value: id as CameraMode,
+              label: id,
+              id: `btn-cam-${id.toLowerCase()}`,
+              title: CAMERA_MODE_LABEL[id],
+            }))}
+          />
+          <Button
+            id="btn-map-fullscreen"
+            size="sm"
+            variant="neutral"
+            iconOnly
+            aria-label={isFullscreen ? 'Exit full screen' : 'Enter full screen'}
+            title={isFullscreen ? 'Exit full screen' : 'Enter full screen'}
+            onClick={toggleFullscreen}
+            icon={
+              isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />
+            }
+          />
+        </div>
+      </div>
 
-            {/* Coverage Gaps Alert List */}
+      {/* Survey panel */}
+      <div
+        id="survey-panel"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        className="absolute right-2 top-12 z-20 w-64 overflow-hidden rounded border border-line bg-surface-0/95"
+      >
+        <button
+          type="button"
+          aria-expanded={isSurveyPanelOpen}
+          onClick={() => setIsSurveyPanelOpen((open) => !open)}
+          className="flex w-full items-center justify-between gap-2 border-b border-line bg-surface-2 px-2.5 py-1.5 text-left transition-colors hover:bg-surface-3"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Scan className="h-3.5 w-3.5 shrink-0 text-ink-3" />
+            <span className="truncate text-2xs font-medium text-ink">Area surveyed</span>
+          </span>
+          <span className="flex shrink-0 items-center gap-1.5">
+            <span className="telemetry text-2xs font-semibold text-ink">{coveragePercent}%</span>
+            {isSurveyPanelOpen ? (
+              <ChevronUp className="h-3.5 w-3.5 text-ink-3" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5 text-ink-3" />
+            )}
+          </span>
+        </button>
+
+        {isSurveyPanelOpen && (
+          <div className="space-y-2 p-2.5">
             <div>
-              <div className="flex items-center justify-between text-[10px] text-zinc-400 uppercase tracking-wider font-semibold mb-1">
-                <span>Active Coverage Gaps</span>
-                <span className="text-amber-400 font-bold">{coverageMetrics.gapsCount} Unmapped</span>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-3xs text-ink-3">Mapped ground</span>
+                <span className="telemetry text-2xs font-semibold text-ink">
+                  {formatCount(coverage.areaMappedM2)} m²
+                </span>
               </div>
-              {coverageMetrics.gapsList.length === 0 ? (
-                <div className="flex items-center gap-2 p-1.5 rounded-xs bg-emerald-950/40 border border-emerald-800/50 text-[10px] text-emerald-300">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span>Zero blind spots. Multi-AAV trajectories provide full swath saturation.</span>
-                </div>
+              <ProgressBar
+                className="mt-1.5"
+                value={coveragePercent}
+                tone={coveragePercent > 80 ? 'success' : coveragePercent > 40 ? 'warning' : 'neutral'}
+                label="Overall survey coverage"
+              />
+              <div className="mt-1 text-3xs text-ink-4">
+                {formatCount(coverage.cellsMapped)} of {formatCount(coverage.cellsTotal)} cells ·{' '}
+                {coverage.cellAreaM2.toFixed(0)} m² each
+              </div>
+            </div>
+
+            <div className="space-y-1.5 border-t border-line pt-2">
+              {coverage.sectors.length === 0 ? (
+                <p className="text-3xs text-ink-4">Start the mission to begin the survey.</p>
               ) : (
-                <div className="space-y-1 max-h-28 overflow-y-auto pr-0.5">
-                  {coverageMetrics.gapsList.map((gap, idx) => (
-                    <div
-                      key={idx}
-                      className="p-1.5 rounded-xs bg-amber-950/30 border border-amber-700/40 flex items-center justify-between text-[10px]"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-                        <div>
-                          <div className="text-amber-200 font-semibold">
-                            {gap.sector} ({gap.quadrant})
-                          </div>
-                          <div className="text-zinc-400 text-[9px]">{gap.unmappedPercent}% deficit</div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleSetCameraMode(gap.assignedAgent as any)}
-                        className="px-1.5 py-0.5 rounded-xs bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-600/50 text-[9px] cursor-pointer transition-colors"
-                      >
-                        VIEW {gap.assignedAgent}
-                      </button>
+                coverage.sectors.map((sector) => (
+                  <div key={sector.id}>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-sm"
+                          style={{ backgroundColor: AGENT_COLOR[sector.assignedAgent] ?? '#7b818a' }}
+                        />
+                        <span className="truncate text-3xs text-ink-3">
+                          Sector {sector.id} · {sector.assignedAgent}
+                        </span>
+                      </span>
+                      <span className="telemetry text-3xs font-semibold text-ink">
+                        {Math.round(sector.percent)}%
+                      </span>
                     </div>
-                  ))}
-                </div>
+                    <ProgressBar
+                      className="mt-1"
+                      height={3}
+                      value={sector.percent}
+                      tone={
+                        sector.percent > 80 ? 'success' : sector.percent > 40 ? 'warning' : 'neutral'
+                      }
+                      label={`Sector ${sector.id} coverage`}
+                    />
+                  </div>
+                ))
               )}
             </div>
 
-            {/* Heatmap Overlay Display Controls */}
-            <div className="pt-2 border-t border-zinc-800/80 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-zinc-400 text-[10px]">PALETTE MODE:</span>
-                <div className="flex items-center gap-1">
-                  <button
-                    id="btn-heatmap-thermal"
-                    onClick={() => setHeatmapMode('THERMAL')}
-                    className={`px-1.5 py-0.5 rounded-xs text-[10px] border cursor-pointer transition-colors ${
-                      heatmapMode === 'THERMAL'
-                        ? 'bg-amber-950/80 border-amber-500 text-amber-300 font-bold'
-                        : 'border-zinc-800 text-zinc-400 hover:bg-zinc-800'
-                    }`}
-                  >
-                    THERMAL
-                  </button>
-                  <button
-                    id="btn-heatmap-agent"
-                    onClick={() => setHeatmapMode('AGENT_SPECTRUM')}
-                    className={`px-1.5 py-0.5 rounded-xs text-[10px] border cursor-pointer transition-colors ${
-                      heatmapMode === 'AGENT_SPECTRUM'
-                        ? 'bg-cyan-950/80 border-cyan-500 text-cyan-300 font-bold'
-                        : 'border-zinc-800 text-zinc-400 hover:bg-zinc-800'
-                    }`}
-                  >
-                    AGENTS
-                  </button>
-                </div>
+            <div className="border-t border-line pt-2">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-3xs text-ink-3">Coverage gaps</span>
+                <StatusBadge
+                  label={coverage.gapCount === 0 ? 'None' : `${coverage.gapCount} open`}
+                  tone={coverage.gapCount === 0 ? 'success' : 'warning'}
+                />
               </div>
-
-              <div className="flex items-center justify-between">
-                <span className="text-zinc-400 text-[10px]">OPACITY:</span>
-                <div className="flex items-center gap-1">
-                  {[0.4, 0.72, 0.95].map((opVal) => (
-                    <button
-                      key={opVal}
-                      onClick={() => setHeatmapOpacity(opVal)}
-                      className={`px-1.5 py-0.5 rounded-xs text-[10px] border cursor-pointer transition-colors ${
-                        heatmapOpacity === opVal
-                          ? 'bg-zinc-800 border-zinc-500 text-zinc-100 font-bold'
-                          : 'border-zinc-800 text-zinc-500 hover:bg-zinc-800/50'
-                      }`}
+              {coverage.gaps.length === 0 ? (
+                <p className="text-3xs text-ink-4">
+                  Every sector probe is inside a sensor footprint.
+                </p>
+              ) : (
+                <ul className="max-h-24 space-y-1 overflow-y-auto pr-0.5">
+                  {coverage.gaps.map((gap) => (
+                    <li
+                      key={`${gap.sector}-${gap.region}`}
+                      className="flex items-center justify-between gap-2 rounded-sm border border-line bg-surface-1 px-1.5 py-1"
                     >
-                      {Math.round(opVal * 100)}%
-                    </button>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <AlertTriangle className="h-3 w-3 shrink-0 text-warning-ink" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-3xs text-ink-2">
+                            {gap.sector} · {gap.region}
+                          </span>
+                          <span className="telemetry block text-3xs text-ink-4">
+                            {gap.unmappedPercent}% unmapped
+                          </span>
+                        </span>
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        iconOnly
+                        aria-label={`Follow ${gap.assignedAgent}`}
+                        title={`Follow ${gap.assignedAgent}`}
+                        onClick={() => applyCameraMode(gap.assignedAgent as CameraMode)}
+                        icon={<Crosshair className="h-3 w-3" />}
+                      />
+                    </li>
                   ))}
-                </div>
-              </div>
+                </ul>
+              )}
+            </div>
 
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-1.5 text-zinc-300 text-[10px] cursor-pointer">
-                  <input
-                    id="toggle-gap-markers"
-                    type="checkbox"
-                    checked={showCoverageGaps}
-                    onChange={(e) => setShowCoverageGaps(e.target.checked)}
-                    className="accent-amber-500 w-3 h-3 rounded-xs"
-                  />
-                  <span>Show 3D Gap Beacons on Terrain</span>
-                </label>
+            <div className="space-y-1.5 border-t border-line pt-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-3xs text-ink-3">Overlay</span>
+                <Segmented
+                  aria-label="Survey overlay palette"
+                  value={paletteMode}
+                  onChange={setPaletteMode}
+                  options={[
+                    { value: 'UNIFORM', label: 'Uniform', id: 'btn-palette-uniform' },
+                    { value: 'AGENT', label: 'By vehicle', id: 'btn-palette-agent' },
+                  ]}
+                />
               </div>
-
-              {/* Visual Heatmap Density Color Key */}
-              <div className="mt-1">
-                <div className="flex items-center justify-between text-[9px] text-zinc-500 mb-0.5 font-mono">
-                  <span>UNVISITED (0%)</span>
-                  <span>MED (50%)</span>
-                  <span>HIGH OVERLAP (100%)</span>
-                </div>
-                <div className="h-1.5 w-full rounded-full bg-gradient-to-r from-black via-cyan-500 via-emerald-400 to-amber-400 border border-zinc-800" />
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-3xs text-ink-3">Opacity</span>
+                <Segmented
+                  aria-label="Survey overlay opacity"
+                  mono
+                  value={String(overlayOpacity)}
+                  onChange={(v) => setOverlayOpacity(Number(v))}
+                  options={[
+                    { value: '0.4', label: '40%' },
+                    { value: '0.7', label: '70%' },
+                    { value: '0.95', label: '95%' },
+                  ]}
+                />
               </div>
+              <LayerToggle
+                id="toggle-gap-markers"
+                icon={<AlertTriangle className="h-3.5 w-3.5" />}
+                label="Gap markers on terrain"
+                active={showGapMarkers}
+                onToggle={() => setShowGapMarkers((v) => !v)}
+              />
             </div>
           </div>
         )}
       </div>
 
-      {/* Bottom HUD: Tactical Map Legends & System Notices */}
-      <div className="absolute bottom-3 left-3 right-3 z-10 pointer-events-none flex flex-wrap items-end justify-between gap-2.5">
-        {/* Left: Map Legend (Agent Colors & Heatmap Scale) */}
-        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 max-w-full">
-          {showHeatmap && (
-            <div className="bg-black/90 backdrop-blur-md px-2.5 py-1.5 rounded-sm border border-amber-900/60 text-[10px] font-mono flex items-center gap-2 text-zinc-300 shadow-lg shrink-0">
-              <span className="w-2 h-2 rounded-full bg-amber-400" />
-              <span className="text-amber-300 font-semibold">HEATMAP:</span>
-              <div className="flex items-center gap-1">
-                <span className="w-10 h-1.5 rounded-full bg-gradient-to-r from-cyan-500 via-emerald-400 to-amber-400" />
-                <span className="text-zinc-400 text-[9px]">(LOW → HIGH)</span>
-              </div>
-              {showCoverageGaps && coverageMetrics.gapsCount > 0 && (
-                <span className="text-amber-400 text-[9px] font-bold border-l border-zinc-800 pl-1.5">
-                  {coverageMetrics.gapsCount} GAPS
-                </span>
-              )}
-            </div>
-          )}
+      {/* Bottom: legend and fusion notice */}
+      <div className="pointer-events-none absolute inset-x-2 bottom-2 z-20 flex flex-wrap items-end justify-between gap-2">
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-line bg-surface-0/95 px-2.5 py-1.5 text-3xs text-ink-2">
+            {AGENT_IDS.map((id) => (
+              <span key={id} className="flex items-center gap-1.5">
+                <span
+                  className="h-2 w-2 rounded-sm"
+                  style={{ backgroundColor: AGENT_COLOR[id] }}
+                />
+                <span className="telemetry">{id}</span>
+              </span>
+            ))}
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-sm bg-ink-2" />
+              <span>Landmarks</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-3 bg-primary" />
+              <span>Shared matches</span>
+            </span>
+          </div>
 
-          <div className="bg-black/90 backdrop-blur-md px-2.5 py-1.5 rounded-sm border border-zinc-800 text-[10px] font-mono flex flex-wrap items-center gap-2.5 sm:gap-3 text-zinc-300 shadow-lg shrink-0">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-sky-400" />
-              <span>AAV-01 <span className="text-zinc-500 hidden sm:inline">(Alpha)</span></span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
-              <span>AAV-02 <span className="text-zinc-500 hidden sm:inline">(Bravo)</span></span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-              <span>AAV-03 <span className="text-zinc-500 hidden sm:inline">(Charlie)</span></span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-ping" />
-              <span className="text-yellow-300">Shared Match</span>
-            </div>
+          <div className="hidden rounded border border-line bg-surface-0/95 px-2.5 py-1.5 text-3xs text-ink-4 xl:block">
+            Drag to orbit · scroll to zoom · click a vehicle to select
           </div>
         </div>
 
-        {/* Right: Fusion Status Notice */}
-        <div className="pointer-events-auto flex flex-col items-end gap-1.5 shrink-0">
-          {simState.collabSlam.fusionStage === 'GLOBAL_FUSED' && (
-            <div className="bg-emerald-950/90 border border-emerald-500/70 text-emerald-300 text-xs px-2.5 py-1 rounded-sm font-mono flex items-center gap-2 shadow-lg backdrop-blur-md">
-              <span>UNIFIED 3D GLOBAL MAP ACTIVE ({simState.fusedPointCloud.length.toLocaleString()} POINTS)</span>
-            </div>
+        <div className="pointer-events-auto flex shrink-0 items-center gap-1.5">
+          {simState.isStressTest && (
+            <StatusBadge label="Radio interference injected" tone="danger" dot />
+          )}
+          {isFusedNow && (
+            <StatusBadge
+              label={`Unified map · ${formatCount(simState.fusedPointCloud.length)} points`}
+              tone="success"
+            />
           )}
         </div>
       </div>

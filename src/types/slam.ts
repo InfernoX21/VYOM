@@ -1,4 +1,12 @@
-export type MissionStatus = 'IDLE' | 'DEPLOYING' | 'EXPLORING' | 'MAPPING' | 'FUSING' | 'FUSED' | 'COMPLETE';
+export type MissionStatus =
+  | 'IDLE'
+  | 'DEPLOYING'
+  | 'EXPLORING'
+  | 'MAPPING'
+  | 'PAUSED'
+  | 'FUSING'
+  | 'FUSED'
+  | 'COMPLETE';
 
 export type AgentStatus = 'OFFLINE' | 'INITIALIZING' | 'ONLINE' | 'EXPLORING' | 'MAPPING' | 'TRANSMITTING' | 'FUSED';
 
@@ -128,8 +136,30 @@ export interface SharedLandmarkMatch {
   residualErrorMeters: number;
 }
 
+/**
+ * Ordered stages of collaborative map fusion:
+ * gather local submaps -> match landmarks -> estimate alignment -> optimise
+ * the pose graph -> publish the unified global map.
+ */
+export type FusionStage =
+  | 'IDLE'
+  | 'GATHERING_SUBMAPS'
+  | 'PLACE_RECOGNITION'
+  | 'ALIGNMENT'
+  | 'POSE_GRAPH_OPT'
+  | 'GLOBAL_FUSED';
+
+export const FUSION_STAGE_ORDER: FusionStage[] = [
+  'IDLE',
+  'GATHERING_SUBMAPS',
+  'PLACE_RECOGNITION',
+  'ALIGNMENT',
+  'POSE_GRAPH_OPT',
+  'GLOBAL_FUSED',
+];
+
 export interface CollaborativeSLAMState {
-  fusionStage: 'IDLE' | 'GATHERING_SUBMAPS' | 'PLACE_RECOGNITION' | 'POSE_GRAPH_OPT' | 'GLOBAL_FUSED';
+  fusionStage: FusionStage;
   fusionProgress: number; // 0 to 100
   loopClosuresDetected: number;
   sharedLandmarksCount: number;

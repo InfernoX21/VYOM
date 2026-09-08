@@ -1,170 +1,213 @@
 import React from 'react';
-import { CollaborativeSLAMState, AAVTelemetry } from '../types/slam';
-import { Network, CheckCircle2, ArrowRight, GitMerge, RefreshCw } from 'lucide-react';
+import { CollaborativeSLAMState, AAVTelemetry, MissionStatus, FUSION_STAGE_ORDER } from '../types/slam';
+import { GitMerge, Check, ExternalLink, Layers } from 'lucide-react';
+import { Panel, PanelHeader, StatusBadge, ProgressBar, SectionLabel, DataRow } from './ui/Panel';
+import { Button } from './ui/Button';
+import {
+  FUSION_STAGE_LABEL,
+  FUSION_STAGE_SHORT,
+  FUSION_STAGE_TONE,
+  LOCAL_MAP_LABEL,
+  LOCAL_MAP_TONE,
+  formatCount,
+} from '../design/labels';
 
 interface CollaborativeSLAMPanelProps {
   collabSlam: CollaborativeSLAMState;
   agents: Record<string, AAVTelemetry>;
+  missionStatus: MissionStatus;
   onTriggerFusion: () => void;
   onOpenFusionModal: () => void;
 }
 
+/** Sector pairs whose overlap yields inter-agent correspondences. */
+const PAIRS: [string, string][] = [
+  ['AAV-01', 'AAV-02'],
+  ['AAV-02', 'AAV-03'],
+  ['AAV-03', 'AAV-01'],
+];
+
 export const CollaborativeSLAMPanel: React.FC<CollaborativeSLAMPanelProps> = ({
   collabSlam,
   agents,
+  missionStatus,
   onTriggerFusion,
   onOpenFusionModal,
 }) => {
-  const isFused = collabSlam.fusionStage === 'GLOBAL_FUSED';
-  const isOptimizing = collabSlam.fusionStage !== 'IDLE' && !isFused;
+  const { fusionStage, fusionProgress } = collabSlam;
+  const isFused = fusionStage === 'GLOBAL_FUSED';
+  const isRunningPipeline = fusionStage !== 'IDLE' && !isFused;
+  const currentIndex = FUSION_STAGE_ORDER.indexOf(fusionStage);
+
+  // Stage list excludes IDLE — it is the absence of a pipeline, not a step.
+  const steps = FUSION_STAGE_ORDER.slice(1);
 
   return (
-    <div className="bg-black border border-zinc-800 rounded-sm p-3 flex flex-col gap-2.5 font-sans">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xs font-semibold font-sans text-zinc-100">
-            Collaborative SLAM (COVINS-G)
-          </h2>
-        </div>
-        <span
-          className={`text-[10px] px-2 py-0.5 rounded-xs font-medium font-sans border ${
-            isFused
-              ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
-              : isOptimizing
-              ? 'bg-yellow-950 text-yellow-300 border-yellow-700 animate-pulse'
-              : 'bg-cyan-950 text-cyan-300 border-cyan-700'
-          }`}
-        >
-          {isFused ? 'Global Fusion Complete' : isOptimizing ? 'Solving Pose Graph' : 'Local Submap Aggregation'}
-        </span>
-      </div>
+    <Panel>
+      <PanelHeader
+        icon={<GitMerge className="h-3.5 w-3.5" />}
+        title="Collaborative SLAM"
+        subtitle="Three local maps to one global map"
+        actions={
+          <StatusBadge
+            label={FUSION_STAGE_LABEL[fusionStage]}
+            tone={FUSION_STAGE_TONE[fusionStage]}
+            dot
+          />
+        }
+      />
 
-      {/* Agents Mapping State (Exact prompt requirements) */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-        {['AAV-01', 'AAV-02', 'AAV-03'].map((id) => {
-          const agent = agents[id];
-          if (!agent) return null;
-
-          return (
-            <div
-              key={id}
-              className="bg-zinc-950 p-2.5 rounded-xs border border-zinc-800 text-xs space-y-1.5 font-sans"
-            >
-              <div className="flex items-center justify-between border-b border-zinc-900 pb-1">
-                <span className="font-semibold text-zinc-100" style={{ color: agent.color }}>
-                  {agent.callsign}
+      {/* Per-agent local maps */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {PAIRS.map((p) => p[0])
+          .map((id) => agents[id])
+          .filter(Boolean)
+          .map((agent) => (
+            <div key={agent.id} className="tile space-y-1 px-2.5 py-2">
+              <div className="flex items-center justify-between gap-1.5 border-b border-line pb-1.5">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-sm"
+                    style={{ backgroundColor: agent.color }}
+                  />
+                  <span className="telemetry text-2xs font-semibold text-ink">
+                    {agent.callsign}
+                  </span>
                 </span>
-                <span
-                  className={`text-[10px] font-semibold px-1.5 py-0.2 rounded-xs ${
-                    agent.localMapStatus === 'READY' || agent.localMapStatus === 'FUSED'
-                      ? 'text-emerald-400 bg-emerald-950/60'
-                      : 'text-amber-400 bg-amber-950/60'
-                  }`}
-                >
-                  {agent.localMapStatus}
-                </span>
+                <StatusBadge
+                  label={LOCAL_MAP_LABEL[agent.localMapStatus]}
+                  tone={LOCAL_MAP_TONE[agent.localMapStatus]}
+                />
               </div>
-              <div className="flex justify-between text-[11px] text-zinc-400">
-                <span>Local Map:</span>
-                <span className="font-semibold text-zinc-200">{agent.localMapStatus}</span>
-              </div>
-              <div className="flex justify-between text-[11px] text-zinc-400">
-                <span>Keyframes:</span>
-                <span className="font-mono tabular-nums font-semibold text-zinc-100">{agent.keyframesCount.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between text-[11px] text-zinc-400">
-                <span>Landmarks:</span>
-                <span className="font-mono tabular-nums font-semibold text-cyan-300">{agent.landmarksCount.toLocaleString()}</span>
-              </div>
+              <DataRow label="Keyframes" value={formatCount(agent.keyframesCount)} />
+              <DataRow label="Landmarks" value={formatCount(agent.landmarksCount)} />
             </div>
-          );
-        })}
+          ))}
       </div>
 
-      {/* Map Fusion Progress & Inter-Agent Overlap Matches */}
-      <div className="bg-zinc-950 p-2.5 rounded-xs border border-zinc-800 text-xs space-y-2 font-sans">
-        <div className="flex items-center justify-between">
-          <span className="text-zinc-300 font-semibold">Map Fusion Status</span>
-          <span className="font-mono tabular-nums font-semibold text-cyan-300">
-            {isFused ? '100% Unified' : `${Math.round(collabSlam.fusionProgress)}% Complete`}
+      {/* Pipeline progress */}
+      <div className="mt-3 rounded border border-line bg-surface-2 px-2.5 py-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-2xs font-medium text-ink-2">
+            {isFused ? 'Unified map published' : FUSION_STAGE_LABEL[fusionStage]}
+          </span>
+          <span className="telemetry text-2xs font-semibold text-ink">
+            {Math.round(fusionProgress)}%
           </span>
         </div>
 
-        {/* Progress Bar */}
-        <div className="w-full bg-zinc-900 h-2 rounded-full overflow-hidden border border-zinc-800">
-          <div
-            className={`h-full transition-all duration-300 ${
-              isFused
-                ? 'bg-emerald-500'
-                : isOptimizing
-                ? 'bg-yellow-400 animate-pulse'
-                : 'bg-cyan-500'
-            }`}
-            style={{ width: `${Math.max(8, collabSlam.fusionProgress)}%` }}
-          />
-        </div>
+        <ProgressBar
+          className="mt-1.5"
+          value={fusionProgress}
+          tone={isFused ? 'success' : isRunningPipeline ? 'warning' : 'neutral'}
+          label="Map fusion progress"
+        />
 
-        {/* Inter-Agent Overlap Correspondences */}
-        <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
-          <div className="bg-zinc-900/90 p-1.5 rounded-xs border border-zinc-800 flex justify-between items-center">
-            <span className="text-zinc-300">AAV-01 ↔ AAV-02</span>
-            <span className="text-emerald-400 font-mono tabular-nums font-semibold">
-              {collabSlam.sharedMatches[0] ? `${Math.round(collabSlam.sharedMatches[0].similarityScore * 100)}% Sim` : 'Scanning'}
-            </span>
+        {/* Stage checklist — makes the sequence legible, not just a bar. */}
+        <ol className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+          {steps.map((stage) => {
+            const index = FUSION_STAGE_ORDER.indexOf(stage);
+            const done = currentIndex > index || isFused;
+            const active = currentIndex === index && !isFused;
+            return (
+              <li
+                key={stage}
+                className={`flex items-center gap-1.5 text-3xs ${
+                  done ? 'text-success-ink' : active ? 'text-warning-ink' : 'text-ink-4'
+                }`}
+              >
+                <span
+                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border ${
+                    done
+                      ? 'border-success-line bg-success-dim'
+                      : active
+                      ? 'border-warning-line bg-warning-dim'
+                      : 'border-line bg-surface-3'
+                  }`}
+                >
+                  {done && <Check className="h-2.5 w-2.5" />}
+                </span>
+                {FUSION_STAGE_SHORT[stage]}
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+
+      {/* Inter-agent correspondences */}
+      <div className="mt-3">
+        <SectionLabel>Inter-agent correspondences</SectionLabel>
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+          {PAIRS.map(([a, b], i) => {
+            const match = collabSlam.sharedMatches[i];
+            return (
+              <div
+                key={`${a}-${b}`}
+                className="tile flex items-center justify-between gap-2 px-2 py-1.5"
+              >
+                <span className="telemetry text-3xs text-ink-2">
+                  {a} / {b}
+                </span>
+                <span
+                  className={`telemetry text-3xs font-semibold ${
+                    match ? 'text-success-ink' : 'text-ink-4'
+                  }`}
+                >
+                  {match ? `${Math.round(match.similarityScore * 100)}%` : '—'}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Aggregate fusion metrics */}
+      <div className="mt-3 grid grid-cols-2 gap-1.5">
+        <div className="tile px-2 py-1.5">
+          <div className="text-3xs text-ink-3">Shared landmarks</div>
+          <div className="telemetry text-2xs font-semibold text-ink">
+            {formatCount(collabSlam.sharedLandmarksCount)}
           </div>
-          <div className="bg-zinc-900/90 p-1.5 rounded-xs border border-zinc-800 flex justify-between items-center">
-            <span className="text-zinc-300">AAV-02 ↔ AAV-03</span>
-            <span className="text-emerald-400 font-mono tabular-nums font-semibold">
-              {collabSlam.sharedMatches[1] ? `${Math.round(collabSlam.sharedMatches[1].similarityScore * 100)}% Sim` : 'Scanning'}
-            </span>
+        </div>
+        <div className="tile px-2 py-1.5">
+          <div className="text-3xs text-ink-3">Alignment confidence</div>
+          <div className="telemetry text-2xs font-semibold text-ink">
+            {collabSlam.alignmentConfidence}%
           </div>
         </div>
       </div>
 
-      {/* Visual Architectural Map Fusion ASCII Diagram */}
-      <div className="bg-black p-2.5 rounded-xs border border-zinc-800 text-[11px] font-sans text-zinc-300">
-        <div className="flex items-center justify-between text-[10px] text-zinc-400 mb-1 border-b border-zinc-900 pb-1">
-          <span>COVINS-G Multi-Agent Fusion Flow:</span>
-          <button
-            onClick={onOpenFusionModal}
-            className="text-cyan-400 hover:text-cyan-300 underline cursor-pointer font-medium"
-          >
-            Expand Diagram
-          </button>
-        </div>
-        <pre className="text-[10px] font-mono text-cyan-300 leading-tight select-none overflow-x-auto">
-{`Map A (AAV-01) ──┐
-Map B (AAV-02) ──┼──> Pose Graph Optimization ──> GLOBAL UNIFIED 3D MAP
-Map C (AAV-03) ──┘`}
-        </pre>
-        <div className="flex items-center justify-between text-[10px] text-zinc-400 mt-2 font-sans">
-          <span>Shared Landmarks: <strong className="text-yellow-300 font-mono tabular-nums">{collabSlam.sharedLandmarksCount}</strong></span>
-          <span>Alignment Confidence: <strong className="text-emerald-400 font-mono tabular-nums">{collabSlam.alignmentConfidence}%</strong></span>
-        </div>
-      </div>
+      {missionStatus === 'PAUSED' && (
+        <p className="mt-2 text-3xs text-danger-ink">
+          Mission paused — fusion resumes with the simulation clock.
+        </p>
+      )}
 
-      {/* Action Trigger Button */}
-      <button
-        id="btn-collab-slam-fuse"
-        onClick={onTriggerFusion}
-        disabled={isFused}
-        className={`w-full py-2 px-3 font-semibold font-sans text-xs rounded-xs flex items-center justify-center gap-2 border transition-all cursor-pointer ${
-          isFused
-            ? 'bg-emerald-950/80 border-emerald-600 text-emerald-400 cursor-default'
-            : isOptimizing
-            ? 'bg-yellow-600 text-black border-yellow-400 animate-pulse'
-            : 'bg-cyan-500 hover:bg-cyan-400 text-black border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.2)]'
-        }`}
-      >
-        <span>
+      {/* Actions */}
+      <div className="mt-3 flex items-center gap-1.5">
+        <Button
+          id="btn-collab-slam-fuse"
+          variant="primary"
+          className="flex-1"
+          disabled={isFused}
+          onClick={onTriggerFusion}
+          icon={<Layers className="h-3.5 w-3.5" />}
+        >
           {isFused
-            ? '3 Local Maps Fused into 1 Global 3D Map'
-            : isOptimizing
-            ? 'Executing Pose Graph Optimization...'
-            : 'Trigger Collaborative Map Fusion'}
-        </span>
-      </button>
-    </div>
+            ? 'Maps fused'
+            : isRunningPipeline
+            ? `Fusing — ${FUSION_STAGE_SHORT[fusionStage]}`
+            : 'Fuse maps'}
+        </Button>
+        <Button
+          variant="neutral"
+          onClick={onOpenFusionModal}
+          icon={<ExternalLink className="h-3.5 w-3.5" />}
+          title="Open the fusion pipeline view"
+        >
+          Pipeline
+        </Button>
+      </div>
+    </Panel>
   );
 };

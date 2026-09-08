@@ -2,19 +2,16 @@ import React from 'react';
 import { SimulationState } from '../simulation/simulationEngine';
 import { Scenario } from '../types/slam';
 import { SCENARIOS } from '../simulation/scenarios';
-import {
-  Play,
-  Pause,
-  RotateCcw,
-  Activity,
-  Cpu,
-  BarChart3,
-  BookOpen,
-  Camera,
-  Shield,
-  Radio,
-} from 'lucide-react';
+import { Play, Pause, RotateCcw, BarChart3, BookOpen, Camera, Layers, Radio } from 'lucide-react';
 import { VyomLogo } from './VyomLogo';
+import { Button, Segmented } from './ui/Button';
+import { StatusBadge } from './ui/Panel';
+import {
+  FUSION_STAGE_SHORT,
+  MISSION_STATUS_LABEL,
+  MISSION_STATUS_TONE,
+  formatMissionTime,
+} from '../design/labels';
 
 interface CommandCenterHeaderProps {
   simState: SimulationState;
@@ -32,6 +29,13 @@ interface CommandCenterHeaderProps {
   onOpenFusionModal: () => void;
 }
 
+const SPEED_OPTIONS = [
+  { value: '0.5', label: '0.5x' },
+  { value: '1', label: '1x' },
+  { value: '2', label: '2x' },
+  { value: '5', label: '5x' },
+];
+
 export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
   simState,
   scenario,
@@ -47,78 +51,112 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
   onOpenCameraFeed,
   onOpenFusionModal,
 }) => {
-  const isRunning = simState.missionStatus !== 'IDLE' && simState.missionStatus !== 'COMPLETE';
-  const formatTime = (totalSeconds: number) => {
-    const s = Math.floor(totalSeconds);
-    const mm = String(Math.floor(s / 60)).padStart(2, '0');
-    const ss = String(s % 60).padStart(2, '0');
-    const ms = Math.floor((totalSeconds % 1) * 10);
-    return `${mm}:${ss}.${ms}`;
-  };
+  const { missionStatus, isRunning, collabSlam } = simState;
+  const isPaused = missionStatus === 'PAUSED';
+  const isComplete = missionStatus === 'COMPLETE';
+  const isFused = collabSlam.fusionStage === 'GLOBAL_FUSED';
+  const isFusingNow = collabSlam.fusionStage !== 'IDLE' && !isFused;
+
+  /* Run control: Start (green) -> Pause (red) -> Resume (green). */
+  const runLabel = isRunning
+    ? 'Pause mission'
+    : isPaused
+    ? 'Resume mission'
+    : isComplete
+    ? 'Run again'
+    : 'Start mission';
+
+  const fuseLabel = isFused
+    ? 'Maps fused'
+    : isFusingNow
+    ? `Fusing — ${FUSION_STAGE_SHORT[collabSlam.fusionStage]}`
+    : 'Fuse maps';
 
   return (
-    <header className="w-full bg-black border-b border-zinc-800 text-zinc-100 px-4 py-1.5 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-2 shadow-md select-none font-sans">
-      {/* Brand & Mission Status */}
-      <div className="flex items-center gap-3.5">
-        <div className="flex items-center gap-2.5">
-          <VyomLogo height={28} className="shrink-0" />
-        </div>
-        <div className="h-7 w-[1px] bg-zinc-800 hidden sm:block"></div>
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xs md:text-sm font-bold font-sans text-zinc-100">
-              VYOM <span className="text-zinc-400 font-normal">| Collaborative Visual-SLAM</span>
-            </h1>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-xs font-sans font-semibold bg-cyan-950/80 text-cyan-400 border border-cyan-800">
-              5G + MEC
-            </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-xs font-sans font-medium bg-zinc-900 text-zinc-400 border border-zinc-800">
-              Simulation
-            </span>
-          </div>
-
+    <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface-1 px-3 py-2">
+      {/* Identity */}
+      <div className="flex shrink-0 items-center gap-2.5">
+        <VyomLogo height={22} />
+        <div className="hidden h-6 w-px bg-line sm:block" />
+        <div className="hidden leading-tight sm:block">
+          <div className="text-xs font-semibold text-ink">Collaborative SLAM</div>
+          <div className="text-3xs text-ink-3">Multi-AAV mission control</div>
         </div>
       </div>
 
-      {/* Middle: Mission Timer, Scenario Selector, & Core Mission Execution Buttons */}
-      <div className="flex flex-wrap items-center gap-2.5">
-        {/* Mission Clock */}
-        <div className="bg-zinc-950 px-3 py-1.5 rounded-sm border border-zinc-800 flex items-center gap-2">
-          <Activity className={`w-3.5 h-3.5 ${isRunning ? 'text-emerald-400 animate-pulse' : 'text-zinc-600'}`} />
-          <div className="flex flex-col">
-            <span className="text-[9px] font-sans font-medium text-zinc-400 leading-none">Mission Time</span>
-            <span className="text-xs font-semibold font-mono tabular-nums text-zinc-100">
-              {formatTime(simState.simTimeSeconds)}
-            </span>
+      {/* Mission clock + state */}
+      <div className="flex shrink-0 items-center gap-3 rounded border border-line bg-surface-2 px-2.5 py-1">
+        <div className="leading-tight">
+          <div className="text-3xs text-ink-3">Mission time</div>
+          <div id="mission-clock" className="telemetry text-sm font-semibold text-ink">
+            {formatMissionTime(simState.simTimeSeconds)}
           </div>
         </div>
-
-        {/* Mission Status Badge */}
-        <div className="bg-zinc-950 px-3 py-1.5 rounded-sm border border-zinc-800 flex flex-col">
-          <span className="text-[9px] font-sans font-medium text-zinc-400 leading-none">Mission State</span>
-          <span
-            className={`text-xs font-semibold font-sans ${
-              simState.missionStatus === 'FUSED' || simState.missionStatus === 'COMPLETE'
-                ? 'text-emerald-400'
-                : simState.missionStatus === 'FUSING'
-                ? 'text-yellow-400 animate-pulse'
-                : simState.missionStatus === 'MAPPING' || simState.missionStatus === 'EXPLORING'
-                ? 'text-cyan-400'
-                : 'text-zinc-300'
-            }`}
-          >
-            {simState.missionStatus}
-          </span>
+        <div className="h-7 w-px bg-line" />
+        <div className="leading-tight">
+          <div className="text-3xs text-ink-3">State</div>
+          <StatusBadge
+            id="mission-state-badge"
+            label={MISSION_STATUS_LABEL[missionStatus]}
+            tone={MISSION_STATUS_TONE[missionStatus]}
+            dot
+            className="mt-0.5"
+          />
         </div>
+      </div>
 
-        {/* Scenario Selector */}
-        <div className="flex items-center gap-1.5 bg-zinc-950 px-2.5 py-1 rounded-sm border border-zinc-800">
-          <span className="text-[11px] font-sans font-medium text-zinc-400">Scenario:</span>
+      {/* Run controls */}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button
+          id={isRunning ? 'btn-pause-mission' : 'btn-start-mission'}
+          variant={isRunning ? 'danger' : 'success'}
+          onClick={isRunning ? onPause : onStart}
+          icon={
+            isRunning ? (
+              <Pause className="h-3.5 w-3.5 fill-current" />
+            ) : (
+              <Play className="h-3.5 w-3.5 fill-current" />
+            )
+          }
+        >
+          {runLabel}
+        </Button>
+
+        <Button
+          id="btn-reset-mission"
+          variant="neutral"
+          iconOnly
+          aria-label="Reset simulation"
+          title="Reset simulation"
+          onClick={onReset}
+          icon={<RotateCcw className="h-3.5 w-3.5" />}
+        />
+
+        <Button
+          id="btn-fuse-maps"
+          variant="primary"
+          disabled={isFused}
+          onClick={onTriggerFusion}
+          icon={<Layers className="h-3.5 w-3.5" />}
+          title={
+            isFused
+              ? 'Local maps are already fused into the unified map'
+              : 'Fuse all local maps into a unified global map'
+          }
+        >
+          {fuseLabel}
+        </Button>
+      </div>
+
+      {/* Scenario + rate + stress */}
+      <div className="flex min-w-0 shrink items-center gap-2">
+        <label className="flex items-center gap-1.5 text-2xs text-ink-3">
+          <span className="hidden md:inline">Scenario</span>
           <select
             id="scenario-selector"
             value={scenario.id}
             onChange={(e) => onSelectScenario(e.target.value)}
-            className="bg-black text-xs font-sans text-cyan-300 border border-zinc-700 px-2 py-1 rounded-xs focus:outline-none focus:border-cyan-500 cursor-pointer"
+            className="h-7 max-w-[190px] rounded border border-line bg-surface-2 px-2 text-2xs text-ink hover:border-line-strong focus:border-primary focus:outline-none"
           >
             {Object.values(SCENARIOS).map((s) => (
               <option key={s.id} value={s.id}>
@@ -126,132 +164,72 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
               </option>
             ))}
           </select>
-        </div>
+        </label>
 
-        {/* Simulation Execution Controls */}
-        <div className="flex items-center gap-1 bg-zinc-950 p-1 rounded-sm border border-zinc-800">
-          {!isRunning ? (
-            <button
-              id="btn-start-mission"
-              onClick={onStart}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-black font-semibold font-sans text-xs rounded-xs shadow transition-colors cursor-pointer"
-            >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              Start Mission
-            </button>
-          ) : (
-            <button
-              id="btn-pause-mission"
-              onClick={onPause}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-black font-semibold font-sans text-xs rounded-xs transition-colors cursor-pointer"
-            >
-              <Pause className="w-3.5 h-3.5 fill-current" />
-              Pause
-            </button>
-          )}
+        <Segmented
+          aria-label="Simulation rate"
+          mono
+          options={SPEED_OPTIONS.map((o) => ({ ...o, id: `speed-btn-${o.label}` }))}
+          value={String(simState.simSpeed)}
+          onChange={(v) => onSetSpeed(Number(v))}
+        />
 
-          <button
-            id="btn-reset-mission"
-            onClick={onReset}
-            className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 rounded-xs transition-colors cursor-pointer"
-            title="Reset Simulation"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        {/* Primary Climax Trigger: COLLABORATIVE MAP FUSION */}
-        <button
-          id="btn-fuse-maps"
-          onClick={onTriggerFusion}
-          disabled={simState.collabSlam.fusionStage === 'GLOBAL_FUSED'}
-          className={`flex items-center justify-center px-3 py-1.5 font-semibold font-sans text-xs rounded-xs border transition-all cursor-pointer ${
-            simState.collabSlam.fusionStage === 'GLOBAL_FUSED'
-              ? 'bg-emerald-950/80 border-emerald-600 text-emerald-400 opacity-90 cursor-default'
-              : simState.collabSlam.fusionStage !== 'IDLE'
-              ? 'bg-yellow-600 text-black border-yellow-500 animate-pulse'
-              : 'bg-gradient-to-r from-amber-600 to-yellow-500 text-black border-amber-400 hover:brightness-110 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
-          }`}
-        >
-          {simState.collabSlam.fusionStage === 'GLOBAL_FUSED'
-            ? 'Maps Fused (Unified)'
-            : simState.collabSlam.fusionStage !== 'IDLE'
-            ? 'Fusing Pose Graph...'
-            : 'Fuse Maps'}
-        </button>
-
-        {/* Speed Controls */}
-        <div className="flex items-center gap-0.5 bg-zinc-950 p-1 rounded-sm border border-zinc-800 font-mono tabular-nums text-[11px]">
-          {[0.5, 1, 2, 5].map((spd) => (
-            <button
-              key={spd}
-              id={`speed-btn-${spd}x`}
-              onClick={() => onSetSpeed(spd)}
-              className={`px-1.5 py-0.5 rounded-xs transition-colors cursor-pointer ${
-                simState.simSpeed === spd
-                  ? 'bg-cyan-600 text-white font-bold'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-              }`}
-            >
-              {spd}x
-            </button>
-          ))}
-        </div>
-
-        {/* Network Stress Demo Toggle */}
-        <button
+        <Button
           id="btn-stress-test"
+          variant={simState.isStressTest ? 'danger' : 'neutral'}
+          size="sm"
           onClick={onToggleStressTest}
-          className={`flex items-center justify-center px-2.5 py-1.5 rounded-xs border font-sans font-medium text-xs transition-colors cursor-pointer ${
-            simState.isStressTest
-              ? 'bg-amber-950 border-amber-500 text-amber-300 animate-pulse'
-              : 'bg-black border-zinc-700 text-zinc-300 hover:border-amber-500/70 hover:bg-zinc-900'
-          }`}
-          title="Toggle 5G RF interference stress demo"
+          title="Inject 5G radio interference to show degraded-link behaviour"
         >
-          <span>{simState.isStressTest ? '5G Stressed (86ms)' : 'Stress Test'}</span>
-        </button>
+          {simState.isStressTest ? 'Interference on' : 'Stress test'}
+        </Button>
       </div>
 
-      {/* Right Side: Modal Triggers (Synthetic Camera, Fusion Pipeline, Analytics, Architecture) */}
-      <div className="flex items-center gap-1.5 font-sans text-xs">
-        <button
+      {/* Views */}
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <Button
           id="btn-open-camera-modal"
+          variant="neutral"
+          size="sm"
           onClick={onOpenCameraFeed}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-black hover:bg-zinc-900 border border-zinc-800 hover:border-cyan-500/70 text-cyan-400 rounded-xs transition-colors cursor-pointer font-medium"
-          title="View simulated drone camera feature extraction"
+          icon={<Camera className="h-3.5 w-3.5" />}
+          title="Onboard camera and feature tracking"
         >
-          <Camera className="w-3.5 h-3.5" />
-          <span>Vision Feed</span>
-        </button>
+          <span className="hidden sm:inline">Vision feed</span>
+        </Button>
 
-        <button
+        <Button
           id="btn-open-fusion-pipeline"
+          variant="neutral"
+          size="sm"
           onClick={onOpenFusionModal}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-black hover:bg-zinc-900 border border-zinc-800 hover:border-yellow-500/70 text-yellow-400 rounded-xs transition-colors cursor-pointer font-medium"
-          title="Examine Collaborative Map Fusion Diagram"
+          icon={<Radio className="h-3.5 w-3.5" />}
+          title="Map fusion pipeline"
         >
-          <Radio className="w-3.5 h-3.5" />
-          <span>Fusion Pipeline</span>
-        </button>
+          <span className="hidden sm:inline">Fusion pipeline</span>
+        </Button>
 
-        <button
+        <Button
           id="btn-open-analytics-modal"
+          variant="neutral"
+          size="sm"
           onClick={onOpenAnalytics}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-black hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-600 text-zinc-300 rounded-xs transition-colors cursor-pointer font-medium"
+          icon={<BarChart3 className="h-3.5 w-3.5" />}
+          title="Mission analytics"
         >
-          <BarChart3 className="w-3.5 h-3.5 text-zinc-400" />
-          <span>Analytics</span>
-        </button>
+          <span className="hidden sm:inline">Analytics</span>
+        </Button>
 
-        <button
+        <Button
           id="btn-open-architecture-modal"
+          variant="neutral"
+          size="sm"
           onClick={onOpenArchitecture}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-black hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-600 text-zinc-300 rounded-xs transition-colors cursor-pointer font-medium"
+          icon={<BookOpen className="h-3.5 w-3.5" />}
+          title="System architecture reference"
         >
-          <BookOpen className="w-3.5 h-3.5 text-zinc-400" />
-          <span>Architecture</span>
-        </button>
+          <span className="hidden sm:inline">Architecture</span>
+        </Button>
       </div>
     </header>
   );

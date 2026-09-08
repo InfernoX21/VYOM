@@ -1,98 +1,100 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { MissionEvent } from '../types/slam';
-import { Terminal, Filter, Download, Trash2 } from 'lucide-react';
+import { Terminal, Download } from 'lucide-react';
+import { Panel, PanelHeader } from './ui/Panel';
+import { Button, Segmented } from './ui/Button';
+import { LOG_TYPE_TAG, LOG_TYPE_TONE } from '../design/labels';
+import { TONE_TEXT } from '../design/tokens';
 
 interface SystemLogPanelProps {
   events: MissionEvent[];
 }
 
-export const SystemLogPanel: React.FC<SystemLogPanelProps> = ({ events }) => {
-  const [filter, setFilter] = useState<'ALL' | 'SLAM' | 'NETWORK' | 'MEC' | 'WARN'>('ALL');
+type LogFilter = 'ALL' | 'SLAM' | 'NETWORK' | 'MEC' | 'WARN';
 
-  const filteredEvents = events.filter((ev) => {
-    if (filter === 'ALL') return true;
-    if (filter === 'SLAM') return ev.type === 'SLAM';
-    if (filter === 'NETWORK') return ev.type === 'NETWORK';
-    if (filter === 'MEC') return ev.type === 'MEC';
-    if (filter === 'WARN') return ev.type === 'WARN';
-    return true;
-  });
+const FILTERS: { value: LogFilter; label: string }[] = [
+  { value: 'ALL', label: 'All' },
+  { value: 'SLAM', label: 'SLAM' },
+  { value: 'NETWORK', label: 'Network' },
+  { value: 'MEC', label: 'Edge' },
+  { value: 'WARN', label: 'Warnings' },
+];
+
+export const SystemLogPanel: React.FC<SystemLogPanelProps> = ({ events }) => {
+  const [filter, setFilter] = useState<LogFilter>('ALL');
+
+  const filteredEvents = useMemo(
+    () => (filter === 'ALL' ? events : events.filter((ev) => ev.type === filter)),
+    [events, filter]
+  );
 
   const handleExport = () => {
-    const text = events.map((e) => `[${e.timestamp}] [${e.type}] ${e.message}`).join('\n');
+    const text = events
+      .slice()
+      .reverse()
+      .map((e) => `[${e.timestamp}] [${e.type}] ${e.message}`)
+      .join('\n');
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `vyom_slam_mission_log_${Date.now()}.txt`;
+    a.download = `vyom-mission-log-${Date.now()}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="bg-black border border-zinc-800 rounded-sm p-3 flex flex-col gap-2 font-sans">
-      {/* Header with Filters */}
-      <div className="flex flex-wrap items-center justify-between border-b border-zinc-800 pb-2 gap-2">
-        <div className="flex items-center gap-2">
-          <Terminal className="w-4 h-4 text-cyan-400" />
-          <h2 className="text-xs font-semibold font-sans text-zinc-100">
-            Event & System Log
-          </h2>
-          <span className="text-[10px] text-zinc-500 font-mono tabular-nums">({events.length} entries)</span>
-        </div>
+    <Panel>
+      <PanelHeader
+        icon={<Terminal className="h-3.5 w-3.5" />}
+        title="Mission log"
+        subtitle={`${events.length} entries`}
+        actions={
+          <>
+            <Segmented
+              aria-label="Filter log by source"
+              options={FILTERS.map((f) => ({ ...f, id: `log-filter-${f.value.toLowerCase()}` }))}
+              value={filter}
+              onChange={setFilter}
+            />
+            <Button
+              id="btn-export-log"
+              variant="neutral"
+              size="sm"
+              iconOnly
+              aria-label="Export mission log"
+              title="Export mission log as a text file"
+              onClick={handleExport}
+              icon={<Download className="h-3.5 w-3.5" />}
+            />
+          </>
+        }
+      />
 
-        <div className="flex items-center gap-1 text-[11px] font-sans">
-          {(['ALL', 'SLAM', 'NETWORK', 'MEC', 'WARN'] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-2 py-0.5 rounded-xs transition-colors cursor-pointer ${
-                filter === f
-                  ? 'bg-cyan-500 text-black font-semibold'
-                  : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200 font-medium'
-              }`}
-            >
-              {f}
-            </button>
-          ))}
-          <div className="h-3 w-px bg-zinc-800 mx-1" />
-          <button
-            onClick={handleExport}
-            className="p-1 text-zinc-400 hover:text-cyan-400 hover:bg-zinc-900 rounded-xs transition-colors cursor-pointer"
-            title="Export Mission Log as .txt"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-
-      {/* Log Stream Window (Technical Log Stream: Monospace JetBrains Mono) */}
-      <div className="bg-zinc-950 rounded-xs border border-zinc-850 p-2 h-44 overflow-y-auto font-mono tabular-nums text-[11px] space-y-1 select-text scrollbar-thin">
+      <div className="h-44 select-text overflow-y-auto rounded border border-line bg-surface-2 p-1.5">
         {filteredEvents.length === 0 ? (
-          <div className="text-zinc-600 italic py-4 text-center font-sans">No log events recorded for current filter.</div>
+          <p className="py-6 text-center text-2xs text-ink-4">No entries for this filter.</p>
         ) : (
-          filteredEvents.map((ev) => {
-            let badgeCol = 'text-zinc-400';
-            if (ev.type === 'SLAM') badgeCol = 'text-cyan-400';
-            if (ev.type === 'NETWORK') badgeCol = 'text-sky-300';
-            if (ev.type === 'MEC') badgeCol = 'text-purple-400';
-            if (ev.type === 'WARN') badgeCol = 'text-amber-400 font-semibold';
-            if (ev.type === 'SUCCESS') badgeCol = 'text-emerald-400 font-semibold';
-
-            return (
-              <div key={ev.id} className="flex items-start gap-2 hover:bg-zinc-900/60 px-1 py-0.5 rounded">
-                <span className="text-zinc-500 shrink-0 select-none">[{ev.timestamp}]</span>
-                <span className={`shrink-0 text-[10px] px-1 py-0.2 rounded-xs border border-zinc-800 ${badgeCol}`}>
-                  {ev.type}
+          <ul className="space-y-0.5">
+            {filteredEvents.map((ev) => (
+              <li
+                key={ev.id}
+                className="flex items-start gap-2 rounded px-1 py-0.5 hover:bg-surface-3"
+              >
+                <span className="telemetry shrink-0 select-none text-3xs text-ink-4">
+                  {ev.timestamp}
                 </span>
-                <span className="text-zinc-200 break-all leading-relaxed">
-                  {ev.message}
+                <span
+                  className={`w-[52px] shrink-0 text-3xs font-medium ${TONE_TEXT[LOG_TYPE_TONE[ev.type]]}`}
+                >
+                  {LOG_TYPE_TAG[ev.type]}
                 </span>
-              </div>
-            );
-          })
+                <span className="min-w-0 flex-1 break-words text-2xs text-ink-2">{ev.message}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
-    </div>
+    </Panel>
   );
 };

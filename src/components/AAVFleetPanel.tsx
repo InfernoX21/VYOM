@@ -1,15 +1,15 @@
 import React from 'react';
 import { AAVTelemetry } from '../types/slam';
+import { Battery, Camera, Navigation } from 'lucide-react';
+import { Panel, PanelHeader, StatusBadge, DataRow } from './ui/Panel';
+import { Button } from './ui/Button';
 import {
-  Battery,
-  Wifi,
-  Navigation,
-  Crosshair,
-  Camera,
-  Activity,
-  CheckCircle2,
-  AlertCircle,
-} from 'lucide-react';
+  AGENT_STATUS_LABEL,
+  AGENT_STATUS_TONE,
+  LOCAL_MAP_LABEL,
+  LOCAL_MAP_TONE,
+  formatCount,
+} from '../design/labels';
 
 interface AAVFleetPanelProps {
   agents: Record<string, AAVTelemetry>;
@@ -24,157 +24,157 @@ export const AAVFleetPanel: React.FC<AAVFleetPanelProps> = ({
   onSelectAgent,
   onOpenLiveCamera,
 }) => {
-  return (
-    <div className="bg-black border border-zinc-800 rounded-sm p-3 flex flex-col gap-2.5 font-sans">
-      <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-        <div className="flex items-center gap-2">
-          <Navigation className="w-4 h-4 text-cyan-400" />
-          <h2 className="text-xs font-semibold font-sans text-zinc-100">
-            AAV Fleet Status (3 Agents)
-          </h2>
-        </div>
-        <span className="text-[10px] font-sans font-medium px-2 py-0.5 rounded-xs bg-emerald-950 text-emerald-400 border border-emerald-800">
-          All Autonomous
-        </span>
-      </div>
+  const list = Object.values(agents) as AAVTelemetry[];
+  const onlineCount = list.filter((a) => a.networkConnected).length;
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-        {(Object.values(agents) as AAVTelemetry[]).map((agent) => {
+  return (
+    <Panel className="shrink-0">
+      <PanelHeader
+        icon={<Navigation className="h-3.5 w-3.5" />}
+        title="AAV fleet"
+        subtitle={`${list.length} vehicles`}
+        actions={
+          <StatusBadge
+            label={`${onlineCount}/${list.length} linked`}
+            tone={onlineCount === list.length ? 'success' : 'danger'}
+            dot
+          />
+        }
+      />
+
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+        {list.map((agent) => {
           const isSelected = selectedAgentId === agent.id;
-          const statusColor =
-            agent.status === 'FUSED'
-              ? 'text-emerald-400 border-emerald-700 bg-emerald-950/50'
-              : agent.status === 'MAPPING' || agent.status === 'EXPLORING'
-              ? 'text-cyan-400 border-cyan-700 bg-cyan-950/50'
-              : 'text-amber-400 border-amber-700 bg-amber-950/50';
+          const batteryTone =
+            agent.battery < 25 ? 'danger' : agent.battery < 50 ? 'warning' : 'success';
 
           return (
             <div
               key={agent.id}
               id={`fleet-card-${agent.id}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={isSelected}
               onClick={() => onSelectAgent(agent.id)}
-              className={`p-2.5 rounded-sm border transition-all cursor-pointer font-sans text-xs ${
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelectAgent(agent.id);
+                }
+              }}
+              className={`flex flex-col gap-2 rounded border p-2.5 transition-colors duration-100 ${
                 isSelected
-                  ? 'bg-zinc-900 border-cyan-500 shadow-[0_0_12px_rgba(6,182,212,0.18)]'
-                  : 'bg-zinc-950 border-zinc-800/90 hover:border-zinc-700'
+                  ? 'border-primary bg-surface-3'
+                  : 'border-line bg-surface-2 hover:border-line-strong'
               }`}
             >
-              {/* Agent Title Bar */}
-              <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-zinc-800/80">
-                <div className="flex items-center gap-1.5">
+              {/* Identity */}
+              <div className="flex items-center justify-between gap-2 border-b border-line pb-2">
+                <div className="flex min-w-0 items-center gap-1.5">
                   <span
-                    className="w-2.5 h-2.5 rounded-full"
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
                     style={{ backgroundColor: agent.color }}
                   />
-                  <span className="font-semibold text-zinc-100 text-sm">
-                    {agent.callsign}
-                  </span>
-                  <span className="text-[10px] text-zinc-400 bg-zinc-900 px-1.5 py-0.5 rounded-xs border border-zinc-800 font-medium">
-                    Sector {agent.sector}
-                  </span>
+                  <span className="telemetry text-xs font-semibold text-ink">{agent.callsign}</span>
+                  <span className="truncate text-3xs text-ink-3">Sector {agent.sector}</span>
                 </div>
-                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-xs border ${statusColor}`}>
-                  {agent.status}
-                </span>
+                <StatusBadge
+                  label={AGENT_STATUS_LABEL[agent.status]}
+                  tone={AGENT_STATUS_TONE[agent.status]}
+                />
               </div>
 
-              {/* Real-Time Telemetry: Position, Orientation, Battery, Altitude, Speed, SLAM, 5G */}
-              <div className="grid grid-cols-2 gap-y-1.5 gap-x-2 text-[11px] text-zinc-300 mb-2 font-sans">
+              {/* Flight telemetry */}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                 <div>
-                  <span className="text-zinc-500 text-[10px] font-medium block">Status</span>
-                  <span className="font-semibold text-emerald-400">{agent.networkConnected ? 'Online' : 'Offline'}</span>
-                </div>
-                <div>
-                  <span className="text-zinc-500 text-[10px] font-medium block">Mission</span>
-                  <span className="font-semibold text-cyan-300">
-                    {agent.status === 'FUSED' ? 'Fused / Recon' : agent.status}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-zinc-500 text-[10px] font-medium block">Battery</span>
-                  <div className="flex items-center gap-1 font-semibold">
-                    <Battery className={`w-3.5 h-3.5 ${agent.battery < 25 ? 'text-rose-400 animate-pulse' : agent.battery < 50 ? 'text-amber-400' : 'text-emerald-400'}`} />
-                    <span className={`font-mono tabular-nums ${agent.battery < 25 ? 'text-rose-400' : 'text-zinc-100'}`}>{Math.round(agent.battery)}%</span>
-                    <span className="text-[9px] text-zinc-400 font-normal font-mono tabular-nums">({(agent.battery * 0.26).toFixed(0)}m)</span>
+                  <div className="text-3xs text-ink-3">Battery</div>
+                  <div className="flex items-center gap-1">
+                    <Battery
+                      className={`h-3.5 w-3.5 ${
+                        batteryTone === 'danger'
+                          ? 'text-danger'
+                          : batteryTone === 'warning'
+                          ? 'text-warning'
+                          : 'text-success'
+                      }`}
+                    />
+                    <span className="telemetry text-2xs font-semibold text-ink">
+                      {Math.round(agent.battery)}%
+                    </span>
+                    <span className="telemetry text-3xs text-ink-4">
+                      {(agent.battery * 0.26).toFixed(0)} min
+                    </span>
                   </div>
                 </div>
                 <div>
-                  <span className="text-zinc-500 text-[10px] font-medium block">Altitude (AGL)</span>
-                  <span className="font-semibold font-mono tabular-nums text-zinc-100">{agent.altitude.toFixed(1)} m</span>
+                  <div className="text-3xs text-ink-3">Altitude</div>
+                  <div className="telemetry text-2xs font-semibold text-ink">
+                    {agent.altitude.toFixed(1)} m
+                  </div>
                 </div>
                 <div>
-                  <span className="text-zinc-500 text-[10px] font-medium block">Ground Speed</span>
-                  <span className="font-semibold font-mono tabular-nums text-zinc-100">{agent.speed.toFixed(1)} m/s <span className="text-[9px] text-zinc-400 font-normal font-mono tabular-nums">({(agent.speed * 3.6).toFixed(0)} km/h)</span></span>
+                  <div className="text-3xs text-ink-3">Ground speed</div>
+                  <div className="telemetry text-2xs font-semibold text-ink">
+                    {agent.speed.toFixed(1)} m/s
+                  </div>
                 </div>
                 <div>
-                  <span className="text-zinc-500 text-[10px] font-medium block">5G Bearer</span>
-                  <div className="flex items-center gap-1 font-semibold text-cyan-400 font-mono tabular-nums">
-                    <Wifi className="w-3 h-3 text-cyan-400" />
-                    <span>{agent.rsrpDbm} dBm</span>
+                  <div className="text-3xs text-ink-3">5G signal</div>
+                  <div className="telemetry text-2xs font-semibold text-ink">
+                    {agent.rsrpDbm} dBm
                   </div>
                 </div>
               </div>
 
-              {/* Exact Real-Time 3D Position & 6-DOF Orientation */}
-              <div className="bg-black/95 p-1.5 rounded-xs border border-zinc-800/90 text-[10px] space-y-1 mb-2 font-sans">
-                <div className="flex justify-between items-center text-zinc-400">
-                  <span className="text-zinc-500 font-medium">Position (X,Y,Z):</span>
-                  <span className="text-cyan-300 font-mono tabular-nums font-semibold">
-                    [{agent.position.x.toFixed(1)}, {agent.position.y.toFixed(1)}, {agent.position.z.toFixed(1)}]m
-                  </span>
-                </div>
-                <div className="flex justify-between items-center text-zinc-400">
-                  <span className="text-zinc-500 font-medium">Orientation (P,R,Y):</span>
-                  <span className="text-amber-300 font-mono tabular-nums font-semibold">
-                    P:{agent.orientation.pitch >= 0 ? '+' : ''}{agent.orientation.pitch.toFixed(1)}° R:{agent.orientation.roll >= 0 ? '+' : ''}{agent.orientation.roll.toFixed(1)}° Y:{Math.round(agent.orientation.yaw)}°
-                  </span>
-                </div>
+              {/* Pose */}
+              <div className="tile space-y-1 px-2 py-1.5">
+                <DataRow
+                  label="Position X,Y,Z"
+                  value={`${agent.position.x.toFixed(1)}, ${agent.position.y.toFixed(
+                    1
+                  )}, ${agent.position.z.toFixed(1)} m`}
+                />
+                <DataRow
+                  label="Attitude P,R,Y"
+                  value={`${agent.orientation.pitch.toFixed(1)}°, ${agent.orientation.roll.toFixed(
+                    1
+                  )}°, ${Math.round(agent.orientation.yaw)}°`}
+                />
               </div>
 
-              {/* SLAM Sub-metrics & Local Mapping Status */}
-              <div className="bg-black/80 p-2 rounded-xs border border-zinc-800/80 text-[10px] space-y-1 mb-2 font-sans">
-                <div className="flex justify-between items-center text-zinc-400">
-                  <span className="font-medium">Local Map:</span>
-                  <span
-                    className={`font-semibold ${
-                      agent.localMapStatus === 'READY' || agent.localMapStatus === 'FUSED'
-                        ? 'text-emerald-400'
-                        : 'text-amber-400'
-                    }`}
-                  >
-                    {agent.localMapStatus}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center text-zinc-400">
-                  <span className="font-medium">Keyframes:</span>
-                  <span className="font-mono tabular-nums font-semibold text-zinc-200">{agent.keyframesCount.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between items-center text-zinc-400">
-                  <span className="font-medium">Landmarks:</span>
-                  <span className="font-mono tabular-nums font-semibold text-cyan-300">{agent.landmarksCount.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between items-center text-zinc-400">
-                  <span className="font-medium">Features / Frame:</span>
-                  <span className="font-mono tabular-nums font-semibold text-zinc-200">{agent.featuresTrackedPerFrame} pts</span>
-                </div>
+              {/* SLAM */}
+              <div className="tile space-y-1 px-2 py-1.5">
+                <DataRow
+                  label="Local map"
+                  value={LOCAL_MAP_LABEL[agent.localMapStatus]}
+                  tone={LOCAL_MAP_TONE[agent.localMapStatus]}
+                  prose
+                />
+                <DataRow label="Keyframes" value={formatCount(agent.keyframesCount)} />
+                <DataRow label="Landmarks" value={formatCount(agent.landmarksCount)} />
+                <DataRow
+                  label="Features / frame"
+                  value={formatCount(agent.featuresTrackedPerFrame)}
+                />
               </div>
 
-              {/* Action Button: Open Live CV Camera View */}
-              <button
+              <Button
                 id={`btn-agent-cam-${agent.id}`}
+                variant="neutral"
+                size="sm"
+                className="w-full"
                 onClick={(e) => {
                   e.stopPropagation();
                   onOpenLiveCamera(agent.id);
                 }}
-                className="w-full py-1.5 px-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-cyan-400 hover:text-cyan-300 rounded-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer text-[11px] font-semibold font-sans"
+                icon={<Camera className="h-3 w-3" />}
               >
-                <Camera className="w-3 h-3" />
-                <span>Onboard Stereo CV Feed</span>
-              </button>
+                Onboard camera
+              </Button>
             </div>
           );
         })}
       </div>
-    </div>
+    </Panel>
   );
 };

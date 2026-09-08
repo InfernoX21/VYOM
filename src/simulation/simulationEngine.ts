@@ -13,9 +13,12 @@ import {
   Vector3D,
 } from '../types/slam';
 import { SCENARIOS } from './scenarios';
+import { AGENT_COLOR } from '../design/tokens';
 
 export interface SimulationState {
   missionStatus: MissionStatus;
+  /** True while the simulation clock is advancing. Drives run/pause affordances. */
+  isRunning: boolean;
   scenarioId: string;
   simTimeSeconds: number;
   simSpeed: number;
@@ -30,6 +33,17 @@ export interface SimulationState {
   fusedPointCloud: Landmark3D[];
 }
 
+/** Fraction of overall fusion progress owned by each stage. */
+const FUSION_STAGE_CEILING = {
+  GATHERING_SUBMAPS: 20,
+  PLACE_RECOGNITION: 45,
+  ALIGNMENT: 65,
+  POSE_GRAPH_OPT: 100,
+} as const;
+
+/** Seconds of post-fusion consolidation before the mission reports Complete. */
+const CONSOLIDATION_SECONDS = 12;
+
 export class SimulationEngine {
   private state: SimulationState;
   private listeners: ((state: SimulationState) => void)[] = [];
@@ -39,6 +53,10 @@ export class SimulationEngine {
   private eventCounter: number = 0;
   private lastLatencySampleTime: number = 0;
   private lastMecSampleTime: number = 0;
+  /** Status to restore when resuming from PAUSED. */
+  private statusBeforePause: MissionStatus | null = null;
+  /** Mission time at which the unified map was published. */
+  private fusedAtSeconds: number | null = null;
 
   constructor(initialScenarioId: string = 'urban_disaster') {
     this.scenario = SCENARIOS[initialScenarioId] || SCENARIOS.urban_disaster;
@@ -68,60 +86,98 @@ export class SimulationEngine {
   }
 
   public setScenario(scenarioId: string) {
-    if (SCENARIOS[scenarioId]) {
+    if (!SCENARIOS[scenarioId]) return;
+    this.stopClock();
+    this.scenario = SCENARIOS[scenarioId];
+    this.state = this.createInitialState(scenarioId);
+    this.statusBeforePause = null;
+    this.fusedAtSeconds = null;
+    this.addEvent('INFO', `Scenario switched to ${this.scenario.name}`);
+    this.notify();
+  }
+
+  /**
+   * Start a fresh mission, or resume a paused one. A completed mission is
+   * reset first so Start always means "run from the top".
+   */
+  public start() {
+    if (this.state.missionStatus === 'COMPLETE') {
+      this.state = this.createInitialState(this.scenario.id);
+      this.fusedAtSeconds = null;
+      this.statusBeforePause = null;
+    }
+
+    if (this.state.missionStatus === 'IDLE') {
+      this.state.missionStatus = 'DEPLOYING';
+      this.addEvent('INFO', 'Mission started: three AAVs departing the launch pad for their assigned sectors');
+      this.addEvent('NETWORK', '5G URLLC bearer established with the edge node (base station 01)');
+      this.addEvent('MEC', 'Collaborative SLAM server ready on the edge node');
+    } else if (this.state.missionStatus === 'PAUSED') {
+      this.state.missionStatus = this.statusBeforePause ?? 'MAPPING';
+      this.statusBeforePause = null;
+      this.addEvent('INFO', 'Mission resumed');
+    }
+
+    this.startClock();
+    this.notify();
+  }
+
+  /** Halt the clock and hold every subsystem in place. */
+  public pause() {
+    const wasRunning = this.timer !== null;
+    this.stopClock();
+
+    const status = this.state.missionStatus;
+    if (wasRunning && status !== 'IDLE' && status !== 'COMPLETE' && status !== 'PAUSED') {
+      this.statusBeforePause = status;
+      this.state.missionStatus = 'PAUSED';
+      this.addEvent('WARN', 'Mission paused: flight, SLAM and edge processing held');
+    }
+
+    this.notify();
+  }
+
+  /** Convenience for a single control that alternates run and hold. */
+  public toggleRun() {
+    if (this.state.isRunning) {
       this.pause();
-      this.scenario = SCENARIOS[scenarioId];
-      this.state = this.createInitialState(scenarioId);
-      this.addEvent('INFO', `Mission scenario switched to: ${this.scenario.name}`);
-      this.notify();
+    } else {
+      this.start();
     }
   }
 
-  public start() {
-    if (this.state.missionStatus === 'IDLE') {
-      this.state.missionStatus = 'DEPLOYING';
-      this.addEvent('INFO', 'MISSION START: 3 AAVs departing central launch pad for Sector assignment');
-      this.addEvent('NETWORK', '5G URLLC radio bearer established with edge MEC node (Base Station 01)');
-      this.addEvent('MEC', 'MEC COVINS collaborative SLAM server initialized in listening mode');
-    } else if (this.state.missionStatus === 'COMPLETE') {
-      this.reset();
-      this.start();
-      return;
-    }
+  public reset() {
+    this.stopClock();
+    this.state = this.createInitialState(this.scenario.id);
+    this.statusBeforePause = null;
+    this.fusedAtSeconds = null;
+    this.addEvent('INFO', 'Simulation reset to launch staging');
+    this.notify();
+  }
 
-    if (this.timer) {
-      clearInterval(this.timer);
-    }
-
+  private startClock() {
+    if (this.timer !== null) clearInterval(this.timer);
     this.lastTickMs = performance.now();
     this.timer = window.setInterval(() => {
       const now = performance.now();
       const dt = Math.min(0.2, (now - this.lastTickMs) / 1000);
       this.lastTickMs = now;
       this.tick(dt * this.state.simSpeed);
-    }, 50); // 20 FPS physics/telemetry tick
-
-    this.notify();
+    }, 50); // 20 Hz physics/telemetry tick
+    this.state.isRunning = true;
   }
 
-  public pause() {
-    if (this.timer) {
+  private stopClock() {
+    if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
     }
-    this.notify();
-  }
-
-  public reset() {
-    this.pause();
-    this.state = this.createInitialState(this.scenario.id);
-    this.addEvent('INFO', 'Simulation reset to deployment staging configuration.');
-    this.notify();
+    this.state.isRunning = false;
   }
 
   public setSpeed(speed: number) {
     this.state.simSpeed = speed;
-    this.addEvent('INFO', `Simulation execution rate adjusted to ${speed}x`);
+    this.addEvent('INFO', `Simulation rate set to ${speed}x`);
     this.notify();
   }
 
@@ -129,18 +185,48 @@ export class SimulationEngine {
     this.state.isStressTest = !this.state.isStressTest;
     this.state.network.stressMode = this.state.isStressTest;
     if (this.state.isStressTest) {
-      this.addEvent('WARN', '⚠️ 5G NETWORK STRESS TEST ACTIVATED: Artificial RF interference injected (Bandwidth throttled, latency spiking)');
+      this.addEvent('WARN', 'Stress test enabled: RF interference injected, bandwidth throttled and latency spiking');
     } else {
-      this.addEvent('SUCCESS', '5G Network restored to normal URLLC operational parameters (18ms latency, 0.2% packet loss)');
+      this.addEvent('SUCCESS', '5G link restored to nominal URLLC parameters (18 ms latency, 0.2% loss)');
     }
     this.notify();
   }
 
+  /**
+   * Begin collaborative map fusion on demand.
+   *
+   * Fusion progress is advanced by the simulation clock, so this also starts
+   * the clock if the mission is idle or paused — otherwise the button would
+   * appear to hang at 0%. Agents that have not yet built a local map are
+   * brought up to a fusable state first.
+   */
   public triggerMapFusion() {
-    if (this.state.collabSlam.fusionStage === 'GLOBAL_FUSED') return;
+    const slam = this.state.collabSlam;
+    if (slam.fusionStage === 'GLOBAL_FUSED') return;
+    // Already mid-pipeline: just make sure the clock is running.
+    if (slam.fusionStage !== 'IDLE') {
+      if (!this.state.isRunning) this.start();
+      return;
+    }
 
-    this.addEvent('SLAM', 'MANUAL OVERRIDE: Collaborative Map Fusion initiated across all connected agents');
-    this.state.collabSlam.fusionStage = 'PLACE_RECOGNITION';
+    if (this.state.missionStatus === 'IDLE') {
+      // Fusing straight from staging: deploy first so the agents have submaps.
+      this.addEvent('INFO', 'Map fusion requested from standby: deploying AAVs to collect local maps');
+      this.start();
+    } else if (this.state.missionStatus === 'PAUSED') {
+      this.start();
+    }
+
+    for (const agent of Object.values(this.state.agents)) {
+      agent.slamActive = true;
+      if (agent.localMapStatus === 'NOT_STARTED' || agent.localMapStatus === 'INITIALIZING') {
+        agent.localMapStatus = 'PROCESSING';
+      }
+    }
+
+    this.addEvent('SLAM', 'Map fusion requested: collecting local maps from all connected AAVs');
+    slam.fusionStage = 'GATHERING_SUBMAPS';
+    slam.fusionProgress = 0;
     this.state.missionStatus = 'FUSING';
     this.state.mec.status = 'OPTIMIZING';
     this.notify();
@@ -153,7 +239,7 @@ export class SimulationEngine {
         id: 'AAV-01',
         callsign: 'AAV-01',
         sector: 'Alpha',
-        color: '#38bdf8', // Cyan
+        color: AGENT_COLOR['AAV-01'],
         status: 'ONLINE',
         battery: 100,
         altitude: 0,
@@ -178,7 +264,7 @@ export class SimulationEngine {
         id: 'AAV-02',
         callsign: 'AAV-02',
         sector: 'Bravo',
-        color: '#fbbf24', // Amber
+        color: AGENT_COLOR['AAV-02'],
         status: 'ONLINE',
         battery: 100,
         altitude: 0,
@@ -203,7 +289,7 @@ export class SimulationEngine {
         id: 'AAV-03',
         callsign: 'AAV-03',
         sector: 'Charlie',
-        color: '#34d399', // Emerald
+        color: AGENT_COLOR['AAV-03'],
         status: 'ONLINE',
         battery: 100,
         altitude: 0,
@@ -228,6 +314,7 @@ export class SimulationEngine {
 
     return {
       missionStatus: 'IDLE',
+      isRunning: false,
       scenarioId,
       simTimeSeconds: 0,
       simSpeed: 1.0,
@@ -307,13 +394,13 @@ export class SimulationEngine {
           id: 'ev_init_1',
           timestamp: '00:00:00',
           type: 'INFO',
-          message: 'VYOM Collaborative Multi-AAV Command Center Ready (COVINS-5G testbed)',
+          message: 'Command centre ready. Three AAVs staged on the launch pad.',
         },
         {
           id: 'ev_init_2',
           timestamp: '00:00:01',
           type: 'NETWORK',
-          message: '5G Core (gNodeB) localized: URLLC priority slice allocated for telemetry/submaps',
+          message: '5G core reachable. URLLC priority slice allocated for telemetry and submaps.',
         },
       ],
       fusedPointCloud: [],
@@ -348,7 +435,7 @@ export class SimulationEngine {
     if (this.state.missionStatus === 'DEPLOYING') {
       if (t > 4) {
         this.state.missionStatus = 'EXPLORING';
-        this.addEvent('SLAM', 'AAVs reached operational cruising altitudes. Visual-Inertial SLAM (ORB-SLAM3) engaged.');
+        this.addEvent('SLAM', 'AAVs at cruising altitude. Onboard visual-inertial SLAM engaged.');
         for (const id in this.state.agents) {
           this.state.agents[id].status = 'EXPLORING';
           this.state.agents[id].slamActive = true;
@@ -362,7 +449,7 @@ export class SimulationEngine {
           this.state.agents[id].status = 'MAPPING';
           this.state.agents[id].localMapStatus = 'PROCESSING';
         }
-        this.addEvent('SLAM', 'Sector visual odometry tracking stabilized. Generating high-density keyframes.');
+        this.addEvent('SLAM', 'Sector tracking stabilised. Building dense local maps.');
       }
     }
 
@@ -381,13 +468,22 @@ export class SimulationEngine {
     // 6. Collaborative SLAM & Automatic Fusion Triggering
     this.updateCollaborativeSLAM(t, dt);
 
+    // 7. Mission completion: hold briefly after fusion, then stop the clock.
+    if (this.state.missionStatus === 'FUSED' && this.fusedAtSeconds !== null) {
+      if (t - this.fusedAtSeconds >= CONSOLIDATION_SECONDS) {
+        this.state.missionStatus = 'COMPLETE';
+        this.addEvent('SUCCESS', 'Mission complete. Unified map archived and AAVs holding station.');
+        this.stopClock();
+      }
+    }
+
     this.notify();
   }
 
   private updateAAVKinematics(t: number, dt: number) {
     if (this.state.missionStatus === 'IDLE') {
-      // Drones remain staged on common launch pad
-      for (const [id, agent] of Object.entries(this.state.agents)) {
+      // AAVs remain staged on the launch pad.
+      for (const agent of Object.values(this.state.agents)) {
         agent.speed = 0;
         agent.altitude = 0;
         agent.battery = 100;
@@ -397,7 +493,6 @@ export class SimulationEngine {
       return;
     }
 
-    const isDeploying = this.state.missionStatus === 'DEPLOYING';
     const targetAltitudes = { 'AAV-01': 42, 'AAV-02': 38, 'AAV-03': 45 };
     const launchPadBays: Record<string, { x: number; y: number }> = {
       'AAV-01': { x: -3.8, y: -12 },
@@ -588,10 +683,10 @@ export class SimulationEngine {
 
         // Periodic telemetry logging
         if (agent.keyframesCount === 50) {
-          this.addEvent('SLAM', `${id}: Local submap initialized (50 keyframes, ${agent.landmarksCount} 3D landmarks)`, id);
+          this.addEvent('SLAM', `${id}: local map initialised — 50 keyframes, ${agent.landmarksCount} landmarks`, id);
           agent.localMapStatus = 'READY';
         } else if (agent.keyframesCount === 250) {
-          this.addEvent('SLAM', `${id}: Submap density adequate for global alignment (>250 keyframes)`, id);
+          this.addEvent('SLAM', `${id}: local map dense enough for global alignment (250 keyframes)`, id);
         }
       }
     }
@@ -740,84 +835,161 @@ export class SimulationEngine {
   private updateCollaborativeSLAM(t: number, dt: number) {
     const slam = this.state.collabSlam;
 
-    // Automatic trigger check: When each agent has accumulated sufficient keyframes (>180) and time > 35s
+    // Automatic trigger: every agent holds a usable submap, or the survey has
+    // run long enough that the edge server initiates fusion itself.
     const allHaveSubmaps = Object.values(this.state.agents).every((a) => a.keyframesCount >= 180);
     if (slam.fusionStage === 'IDLE' && (allHaveSubmaps || t > 40)) {
-      this.addEvent('SLAM', 'COVINS DETECTOR: Visual overlap threshold exceeded in Inter-Sector Buffer zone');
-      this.addEvent('MEC', 'MEC Edge Server auto-triggered Multi-Agent Pose Graph Optimization (g2o backend)');
-      slam.fusionStage = 'PLACE_RECOGNITION';
+      this.addEvent('SLAM', 'Visual overlap threshold exceeded in the inter-sector buffer zone');
+      this.addEvent('MEC', 'Edge server started multi-agent pose graph optimisation');
+      slam.fusionStage = 'GATHERING_SUBMAPS';
+      slam.fusionProgress = 0;
       this.state.missionStatus = 'FUSING';
       this.state.mec.status = 'OPTIMIZING';
     }
 
-    if (slam.fusionStage === 'PLACE_RECOGNITION') {
-      slam.fusionProgress = Math.min(35, slam.fusionProgress + dt * 15);
-      slam.loopClosuresDetected = Math.min(14, Math.floor(slam.fusionProgress / 2.5));
-
-      // Generate shared landmark correspondence matches between agents
-      if (slam.sharedMatches.length === 0) {
-        slam.sharedMatches = [
-          {
-            id: 'match_1',
-            sourceAgentId: 'AAV-01',
-            targetAgentId: 'AAV-02',
-            sourceLandmarkPos: { x: 3, y: 52, z: 28 },
-            targetLandmarkPos: { x: 7, y: 58, z: 30 },
-            similarityScore: 0.94,
-            residualErrorMeters: 0.038,
-          },
-          {
-            id: 'match_2',
-            sourceAgentId: 'AAV-02',
-            targetAgentId: 'AAV-03',
-            sourceLandmarkPos: { x: 32, y: -12, z: 22 },
-            targetLandmarkPos: { x: 38, y: -18, z: 24 },
-            similarityScore: 0.91,
-            residualErrorMeters: 0.042,
-          },
-          {
-            id: 'match_3',
-            sourceAgentId: 'AAV-03',
-            targetAgentId: 'AAV-01',
-            sourceLandmarkPos: { x: -32, y: -14, z: 25 },
-            targetLandmarkPos: { x: -38, y: -16, z: 26 },
-            similarityScore: 0.93,
-            residualErrorMeters: 0.035,
-          },
-        ];
-        this.addEvent('SLAM', 'DBoW2 Vocabulary Tree: 3 inter-agent loop closure candidates identified with >90% BoW confidence');
+    switch (slam.fusionStage) {
+      // --- Stage 1: pull each agent's local map to the edge server -----------
+      case 'GATHERING_SUBMAPS': {
+        slam.fusionProgress = Math.min(
+          FUSION_STAGE_CEILING.GATHERING_SUBMAPS,
+          slam.fusionProgress + dt * 14
+        );
+        for (const agent of Object.values(this.state.agents)) {
+          agent.status = 'TRANSMITTING';
+          if (agent.localMapStatus === 'PROCESSING' && slam.fusionProgress > 12) {
+            agent.localMapStatus = 'READY';
+          }
+        }
+        if (slam.fusionProgress >= FUSION_STAGE_CEILING.GATHERING_SUBMAPS) {
+          slam.fusionStage = 'PLACE_RECOGNITION';
+          const submapTotal = Object.values(this.state.agents).reduce(
+            (acc, a) => acc + a.keyframesCount,
+            0
+          );
+          this.addEvent(
+            'MEC',
+            `All three local maps received (${submapTotal} keyframes). Running place recognition.`
+          );
+        }
+        break;
       }
 
-      if (slam.fusionProgress >= 35) {
-        slam.fusionStage = 'POSE_GRAPH_OPT';
-        slam.relativePoseEstimated = true;
-        this.addEvent('MEC', 'SE(3) Relative Transformations estimated. Levenberg-Marquardt optimizer running on MEC GPU...');
-      }
-    } else if (slam.fusionStage === 'POSE_GRAPH_OPT') {
-      slam.fusionProgress = Math.min(95, slam.fusionProgress + dt * 18);
-      slam.sharedLandmarksCount = Math.round(180 + (slam.fusionProgress - 35) * 8);
-      slam.alignmentConfidence = Math.min(98, Math.round(65 + (slam.fusionProgress - 35) * 0.55));
+      // --- Stage 2: match landmarks across agents ---------------------------
+      case 'PLACE_RECOGNITION': {
+        slam.fusionProgress = Math.min(
+          FUSION_STAGE_CEILING.PLACE_RECOGNITION,
+          slam.fusionProgress + dt * 12
+        );
+        slam.loopClosuresDetected = Math.min(
+          14,
+          Math.floor((slam.fusionProgress - FUSION_STAGE_CEILING.GATHERING_SUBMAPS) / 1.8)
+        );
 
-      if (slam.fusionProgress >= 95) {
-        slam.fusionStage = 'GLOBAL_FUSED';
-        slam.fusionProgress = 100;
-        this.state.missionStatus = 'FUSED';
-        this.state.mec.status = 'ONLINE';
-
-        // Mark all agents as fused
-        for (const id in this.state.agents) {
-          this.state.agents[id].status = 'FUSED';
-          this.state.agents[id].localMapStatus = 'FUSED';
-          this.state.agents[id].slamMode = 'COVINS_COLLAB';
+        if (slam.sharedMatches.length === 0) {
+          slam.sharedMatches = this.createSharedMatches();
+          this.addEvent(
+            'SLAM',
+            'Three inter-agent loop closure candidates identified above 90% descriptor confidence'
+          );
         }
 
-        // Generate the high-density Global Fused Map
-        this.generateGlobalFusedMap();
-
-        this.addEvent('SUCCESS', '🎉 COLLABORATIVE MAP FUSION COMPLETE: Unified 3D Global Map generated at MEC Edge Server');
-        this.addEvent('INFO', `Fused metrics: ${slam.globalLandmarksTotal} points, ${slam.globalKeyframesTotal} keyframes. Chi2 residual: 0.0042m`);
+        if (slam.fusionProgress >= FUSION_STAGE_CEILING.PLACE_RECOGNITION) {
+          slam.fusionStage = 'ALIGNMENT';
+          this.addEvent('MEC', 'Estimating relative SE(3) transforms between the three local frames');
+        }
+        break;
       }
+
+      // --- Stage 3: solve the relative transform between local frames -------
+      case 'ALIGNMENT': {
+        slam.fusionProgress = Math.min(
+          FUSION_STAGE_CEILING.ALIGNMENT,
+          slam.fusionProgress + dt * 11
+        );
+        const span = FUSION_STAGE_CEILING.ALIGNMENT - FUSION_STAGE_CEILING.PLACE_RECOGNITION;
+        const local = (slam.fusionProgress - FUSION_STAGE_CEILING.PLACE_RECOGNITION) / span;
+        slam.alignmentConfidence = Math.round(42 + local * 34);
+        slam.sharedLandmarksCount = Math.round(120 + local * 90);
+
+        if (slam.fusionProgress >= FUSION_STAGE_CEILING.ALIGNMENT) {
+          slam.fusionStage = 'POSE_GRAPH_OPT';
+          slam.relativePoseEstimated = true;
+          this.addEvent('MEC', 'Relative transforms converged. Optimising the global pose graph.');
+        }
+        break;
+      }
+
+      // --- Stage 4: global pose graph optimisation, then publish ------------
+      case 'POSE_GRAPH_OPT': {
+        slam.fusionProgress = Math.min(
+          FUSION_STAGE_CEILING.POSE_GRAPH_OPT,
+          slam.fusionProgress + dt * 13
+        );
+        const span = FUSION_STAGE_CEILING.POSE_GRAPH_OPT - FUSION_STAGE_CEILING.ALIGNMENT;
+        const local = (slam.fusionProgress - FUSION_STAGE_CEILING.ALIGNMENT) / span;
+        slam.sharedLandmarksCount = Math.round(210 + local * 240);
+        slam.alignmentConfidence = Math.min(98, Math.round(76 + local * 22));
+
+        if (slam.fusionProgress >= FUSION_STAGE_CEILING.POSE_GRAPH_OPT) {
+          slam.fusionStage = 'GLOBAL_FUSED';
+          slam.fusionProgress = 100;
+          this.state.missionStatus = 'FUSED';
+          this.state.mec.status = 'ONLINE';
+          this.fusedAtSeconds = t;
+
+          for (const id in this.state.agents) {
+            this.state.agents[id].status = 'FUSED';
+            this.state.agents[id].localMapStatus = 'FUSED';
+            this.state.agents[id].slamMode = 'COVINS_COLLAB';
+          }
+
+          this.generateGlobalFusedMap();
+
+          this.addEvent('SUCCESS', 'Map fusion complete: unified 3D map published by the edge server');
+          this.addEvent(
+            'INFO',
+            `Fused map: ${slam.globalLandmarksTotal.toLocaleString('en-US')} points from ${slam.globalKeyframesTotal.toLocaleString('en-US')} keyframes, chi-squared residual 0.0042 m`
+          );
+        }
+        break;
+      }
+
+      default:
+        break;
     }
+  }
+
+  /** Canonical inter-agent correspondences, one per sector pair. */
+  private createSharedMatches(): SharedLandmarkMatch[] {
+    return [
+      {
+        id: 'match_1',
+        sourceAgentId: 'AAV-01',
+        targetAgentId: 'AAV-02',
+        sourceLandmarkPos: { x: 3, y: 52, z: 28 },
+        targetLandmarkPos: { x: 7, y: 58, z: 30 },
+        similarityScore: 0.94,
+        residualErrorMeters: 0.038,
+      },
+      {
+        id: 'match_2',
+        sourceAgentId: 'AAV-02',
+        targetAgentId: 'AAV-03',
+        sourceLandmarkPos: { x: 32, y: -12, z: 22 },
+        targetLandmarkPos: { x: 38, y: -18, z: 24 },
+        similarityScore: 0.91,
+        residualErrorMeters: 0.042,
+      },
+      {
+        id: 'match_3',
+        sourceAgentId: 'AAV-03',
+        targetAgentId: 'AAV-01',
+        sourceLandmarkPos: { x: -32, y: -14, z: 25 },
+        targetLandmarkPos: { x: -38, y: -16, z: 26 },
+        similarityScore: 0.93,
+        residualErrorMeters: 0.035,
+      },
+    ];
   }
 
   private generateGlobalFusedMap() {

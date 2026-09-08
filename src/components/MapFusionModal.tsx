@@ -1,6 +1,23 @@
 import React from 'react';
-import { CollaborativeSLAMState, AAVTelemetry, MECMetrics } from '../types/slam';
-import { X, CheckCircle2, ArrowRight, GitMerge, Cpu, Layers, Radio } from 'lucide-react';
+import {
+  CollaborativeSLAMState,
+  AAVTelemetry,
+  MECMetrics,
+  NetworkMetrics,
+  FUSION_STAGE_ORDER,
+} from '../types/slam';
+import { Radio, Cpu, Layers, Check, ArrowRight, Navigation } from 'lucide-react';
+import { Modal } from './ui/Modal';
+import { StatusBadge, ProgressBar, SectionLabel, DataRow, MetricTile } from './ui/Panel';
+import { Button } from './ui/Button';
+import {
+  FUSION_STAGE_LABEL,
+  FUSION_STAGE_SHORT,
+  FUSION_STAGE_TONE,
+  LOCAL_MAP_LABEL,
+  LOCAL_MAP_TONE,
+  formatCount,
+} from '../design/labels';
 
 interface MapFusionModalProps {
   isOpen: boolean;
@@ -8,8 +25,16 @@ interface MapFusionModalProps {
   collabSlam: CollaborativeSLAMState;
   agents: Record<string, AAVTelemetry>;
   mec: MECMetrics;
+  network: NetworkMetrics;
   onTriggerFusion: () => void;
 }
+
+/** Sector-boundary description for each overlapping pair. */
+const PAIR_REGION: Record<string, string> = {
+  'AAV-01/AAV-02': 'Alpha / Bravo boundary',
+  'AAV-02/AAV-03': 'Bravo / Charlie boundary',
+  'AAV-03/AAV-01': 'Charlie / Alpha boundary',
+};
 
 export const MapFusionModal: React.FC<MapFusionModalProps> = ({
   isOpen,
@@ -17,188 +42,287 @@ export const MapFusionModal: React.FC<MapFusionModalProps> = ({
   collabSlam,
   agents,
   mec,
+  network,
   onTriggerFusion,
 }) => {
-  if (!isOpen) return null;
+  const { fusionStage, fusionProgress } = collabSlam;
+  const isFused = fusionStage === 'GLOBAL_FUSED';
+  const isRunningPipeline = fusionStage !== 'IDLE' && !isFused;
+  const currentIndex = FUSION_STAGE_ORDER.indexOf(fusionStage);
+  const steps = FUSION_STAGE_ORDER.slice(1);
 
-  const isFused = collabSlam.fusionStage === 'GLOBAL_FUSED';
-  const isOptimizing = collabSlam.fusionStage !== 'IDLE' && !isFused;
+  const agentList = Object.values(agents) as AAVTelemetry[];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 font-sans antialiased select-none">
-      <div className="bg-zinc-950 border border-zinc-800 rounded-sm w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
-        {/* Modal Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 bg-black">
-          <div className="flex items-center gap-2.5">
-            <Radio className="w-5 h-5 text-yellow-400" />
-            <div>
-              <h2 className="text-base font-semibold font-sans text-zinc-100">
-                Collaborative Map Fusion Pipeline
-              </h2>
-              <p className="text-[11px] text-zinc-400 font-sans">
-                COVINS-G Server Centralized Pose Graph Optimization & Loop Closure
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded hover:bg-zinc-900 text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Primary Climax Architectural Flow (Exact Prompt Diagram) */}
-        <div className="bg-zinc-950 p-4 rounded-xs border border-zinc-800 space-y-3">
-          <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span className="font-bold text-cyan-300">DATA & COMPUTATION FLOW PIPELINE:</span>
-            <span className="text-[11px] text-zinc-400">
-              {isFused ? 'STATUS: UNIFIED GLOBAL 3D MAP GENERATED' : isOptimizing ? 'STATUS: OPTIMIZING 6-DoF CONSTRAINTS' : 'STATUS: SUBMAP ACCUMULATION'}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-            {/* Step 1: 3 AAVs */}
-            <div className="bg-zinc-900/90 p-3 rounded-xs border border-zinc-800 flex flex-col justify-between">
-              <div className="text-zinc-400 text-[10px] mb-1 font-bold flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-cyan-400" />
-                <span>1. ONBOARD LOCAL SLAM</span>
-              </div>
-              <div className="space-y-1 my-2">
-                <div className="text-sky-300 font-bold">AAV-01 (Sector Alpha)</div>
-                <div className="text-amber-300 font-bold">AAV-02 (Sector Bravo)</div>
-                <div className="text-emerald-300 font-bold">AAV-03 (Sector Charlie)</div>
-              </div>
-              <p className="text-[10px] text-zinc-500 leading-tight">
-                Stereo VIO feature tracking & keyframe selection running locally onboard drones.
-              </p>
-            </div>
-
-            {/* Step 2: 5G Transport */}
-            <div className="bg-zinc-900/90 p-3 rounded-xs border border-zinc-800 flex flex-col justify-between">
-              <div className="text-zinc-400 text-[10px] mb-1 font-bold flex items-center gap-1">
-                <Radio className="w-3 h-3 text-cyan-400" />
-                <span>2. 5G URLLC NETWORK</span>
-              </div>
-              <div className="space-y-1 my-2 text-[11px]">
-                <div className="text-zinc-300">Latency: <strong className="text-emerald-400">18 ms</strong></div>
-                <div className="text-zinc-300">Slice: <strong className="text-cyan-400">eMBB + URLLC</strong></div>
-                <div className="text-zinc-300">Packet Loss: <strong className="text-emerald-400">0.2%</strong></div>
-              </div>
-              <p className="text-[10px] text-zinc-500 leading-tight">
-                Low-latency wireless transport of compressed keyframe packets to Edge Base Station.
-              </p>
-            </div>
-
-            {/* Step 3: MEC Pose Graph Optimization */}
-            <div className="bg-zinc-900/90 p-3 rounded-xs border border-cyan-700/60 flex flex-col justify-between">
-              <div className="text-cyan-400 text-[10px] mb-1 font-bold flex items-center gap-1">
-                <Cpu className="w-3 h-3 text-cyan-400" />
-                <span>3. MEC EDGE OPTIMIZER</span>
-              </div>
-              <div className="space-y-1 my-2 text-[11px]">
-                <div className="text-zinc-300">Place Rec: <strong className="text-yellow-400">DBoW2 Tree</strong></div>
-                <div className="text-zinc-300">Solver: <strong className="text-cyan-300">g2o Levenberg-M.</strong></div>
-                <div className="text-zinc-300">Residual: <strong className="text-emerald-400">{mec.chi2Error.toFixed(4)}m</strong></div>
-              </div>
-              <p className="text-[10px] text-zinc-500 leading-tight">
-                Multi-agent data sync, inter-agent loop closures, and SE(3) pose graph relaxation.
-              </p>
-            </div>
-
-            {/* Step 4: Unified 3D Global Map */}
-            <div className={`p-3 rounded-xs border flex flex-col justify-between ${
-              isFused
-                ? 'bg-emerald-950/60 border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
-                : 'bg-zinc-900/90 border-zinc-800'
-            }`}>
-              <div className="text-emerald-400 text-[10px] mb-1 font-bold flex items-center gap-1">
-                <Layers className="w-3 h-3 text-emerald-400" />
-                <span>4. UNIFIED 3D MAP</span>
-              </div>
-              <div className="space-y-1 my-2 text-[11px]">
-                <div className="text-zinc-300">Landmarks: <strong className="text-emerald-300">{collabSlam.globalLandmarksTotal || 3277}</strong></div>
-                <div className="text-zinc-300">Keyframes: <strong className="text-zinc-100">{collabSlam.globalKeyframesTotal || 1086}</strong></div>
-                <div className="text-zinc-300">Confidence: <strong className="text-emerald-400">{collabSlam.alignmentConfidence}%</strong></div>
-              </div>
-              <p className="text-[10px] text-zinc-500 leading-tight">
-                Single metric global octree map available for joint mission planning & pathfinding.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Live Inter-Agent Correspondences Table */}
-        <div className="bg-zinc-950 p-3 rounded-xs border border-zinc-800 text-xs">
-          <span className="text-zinc-400 text-[11px] font-bold block mb-2">
-            INTER-AGENT VISUAL CORRESPONDENCES (SHARED LANDMARKS):
-          </span>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
-            <div className="bg-zinc-900 p-2 rounded-xs border border-zinc-800 space-y-1">
-              <div className="flex justify-between font-bold">
-                <span className="text-sky-400">AAV-01</span>
-                <span className="text-zinc-500">↔</span>
-                <span className="text-amber-400">AAV-02</span>
-              </div>
-              <div className="flex justify-between text-zinc-400 text-[10px]">
-                <span>Shared Region: Sector Alpha/Bravo Border</span>
-                <span className="text-emerald-400 font-bold">94% BoW Match</span>
-              </div>
-              <div className="text-[10px] text-zinc-500">
-                Transformation: SE(3) [dx: +124.2m, dy: -8.1m, dz: -4.0m, yaw: 39.8°]
-              </div>
-            </div>
-
-            <div className="bg-zinc-900 p-2 rounded-xs border border-zinc-800 space-y-1">
-              <div className="flex justify-between font-bold">
-                <span className="text-amber-400">AAV-02</span>
-                <span className="text-zinc-500">↔</span>
-                <span className="text-emerald-400">AAV-03</span>
-              </div>
-              <div className="flex justify-between text-zinc-400 text-[10px]">
-                <span>Shared Region: Sector Bravo/Charlie Border</span>
-                <span className="text-emerald-400 font-bold">91% BoW Match</span>
-              </div>
-              <div className="text-[10px] text-zinc-500">
-                Transformation: SE(3) [dx: -68.4m, dy: -118.5m, dz: +7.2m, yaw: 114.5°]
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Action Controls */}
-        <div className="flex items-center justify-between pt-2 border-t border-zinc-800">
-          <span className="text-xs text-zinc-400">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      width="max-w-5xl"
+      icon={<Radio className="h-4 w-4" />}
+      title="Map fusion pipeline"
+      subtitle="COVINS-G server: inter-agent loop closure and pose-graph optimisation"
+      footer={
+        <>
+          <span className="min-w-0 truncate text-2xs text-ink-3">
             {isFused
-              ? '✅ Collaborative fusion solved and locked in Global Map memory.'
-              : 'Execute non-linear least squares optimization across submaps.'}
+              ? 'Unified map solved and held in the global map store.'
+              : 'Runs non-linear least-squares optimisation across the three local maps.'}
           </span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 rounded-xs text-xs cursor-pointer transition-colors"
-            >
-              DISMISS
-            </button>
-            <button
+          <div className="flex items-center gap-1.5">
+            <Button variant="neutral" size="sm" onClick={onClose}>
+              Close
+            </Button>
+            <Button
               id="btn-modal-trigger-fusion"
-              onClick={() => {
-                onTriggerFusion();
-              }}
+              variant="primary"
+              size="sm"
               disabled={isFused}
-              className={`px-4 py-1.5 rounded-xs font-bold text-xs flex items-center justify-center transition-all cursor-pointer ${
-                isFused
-                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-700 cursor-default'
-                  : isOptimizing
-                  ? 'bg-yellow-600 text-black border border-yellow-400 animate-pulse'
-                  : 'bg-cyan-600 hover:bg-cyan-500 text-black border border-cyan-400'
-              }`}
+              onClick={onTriggerFusion}
+              icon={<Layers className="h-3.5 w-3.5" />}
             >
-              <span>{isFused ? 'MAP FUSED' : isOptimizing ? 'SOLVING...' : 'RUN MAP FUSION NOW'}</span>
-            </button>
+              {isFused
+                ? 'Maps fused'
+                : isRunningPipeline
+                ? `Fusing — ${FUSION_STAGE_SHORT[fusionStage]}`
+                : 'Run map fusion'}
+            </Button>
+          </div>
+        </>
+      }
+    >
+      {/* Stage progress */}
+      <div className="rounded border border-line bg-surface-2 px-3 py-2.5">
+        <div className="flex items-baseline justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-xs font-semibold text-ink">
+              {FUSION_STAGE_LABEL[fusionStage]}
+            </span>
+            <StatusBadge
+              label={isFused ? 'Complete' : isRunningPipeline ? 'Running' : 'Standby'}
+              tone={FUSION_STAGE_TONE[fusionStage]}
+              dot
+            />
+          </div>
+          <span className="telemetry text-sm font-semibold text-ink">
+            {Math.round(fusionProgress)}%
+          </span>
+        </div>
+
+        <ProgressBar
+          className="mt-2"
+          height={6}
+          value={fusionProgress}
+          tone={isFused ? 'success' : isRunningPipeline ? 'warning' : 'neutral'}
+          label="Map fusion progress"
+        />
+
+        <ol className="mt-2.5 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+          {steps.map((stage) => {
+            const index = FUSION_STAGE_ORDER.indexOf(stage);
+            const done = currentIndex > index || isFused;
+            const active = currentIndex === index && !isFused;
+            return (
+              <li
+                key={stage}
+                className={`flex items-center gap-1.5 rounded-sm border px-1.5 py-1 text-3xs ${
+                  done
+                    ? 'border-success-line bg-success-dim text-success-ink'
+                    : active
+                    ? 'border-warning-line bg-warning-dim text-warning-ink'
+                    : 'border-line bg-surface-1 text-ink-4'
+                }`}
+              >
+                <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                  {done ? (
+                    <Check className="h-3 w-3" />
+                  ) : (
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                  )}
+                </span>
+                <span className="truncate">{FUSION_STAGE_SHORT[stage]}</span>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+
+      {/* Data path: onboard SLAM -> 5G -> edge -> unified map */}
+      <div className="mt-3">
+        <SectionLabel>Data and computation path</SectionLabel>
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
+          {/* 1. Onboard SLAM */}
+          <div className="tile flex flex-col gap-1.5 px-2.5 py-2">
+            <div className="flex items-center gap-1.5 border-b border-line pb-1.5">
+              <Navigation className="h-3 w-3 shrink-0 text-ink-3" />
+              <span className="text-2xs font-medium text-ink-2">1. Onboard SLAM</span>
+            </div>
+            <div className="space-y-1">
+              {agentList.map((agent) => (
+                <div key={agent.id} className="flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-sm"
+                      style={{ backgroundColor: agent.color }}
+                    />
+                    <span className="telemetry truncate text-3xs text-ink-2">{agent.callsign}</span>
+                  </span>
+                  <StatusBadge
+                    label={LOCAL_MAP_LABEL[agent.localMapStatus]}
+                    tone={LOCAL_MAP_TONE[agent.localMapStatus]}
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-3xs leading-snug text-ink-4">
+              Stereo visual-inertial tracking and keyframe selection run on each vehicle.
+            </p>
+          </div>
+
+          {/* 2. 5G transport */}
+          <div className="tile flex flex-col gap-1.5 px-2.5 py-2">
+            <div className="flex items-center gap-1.5 border-b border-line pb-1.5">
+              <Radio className="h-3 w-3 shrink-0 text-ink-3" />
+              <span className="text-2xs font-medium text-ink-2">2. 5G transport</span>
+            </div>
+            <div className="space-y-1">
+              <DataRow
+                label="Latency"
+                value={`${network.latencyMs} ms`}
+                tone={network.latencyMs > 50 ? 'danger' : network.latencyMs > 20 ? 'warning' : 'success'}
+              />
+              <DataRow label="Slice" value={network.sliceType} prose />
+              <DataRow
+                label="Packet loss"
+                value={`${network.packetLossPercent}%`}
+                tone={network.packetLossPercent > 1 ? 'warning' : 'success'}
+              />
+              <DataRow label="Uplink" value={`${network.throughputMbps} Mbps`} />
+            </div>
+            <p className="text-3xs leading-snug text-ink-4">
+              Compressed keyframe packets travel to the edge base station over the URLLC slice.
+            </p>
+          </div>
+
+          {/* 3. Edge optimiser */}
+          <div className="tile flex flex-col gap-1.5 px-2.5 py-2">
+            <div className="flex items-center gap-1.5 border-b border-line pb-1.5">
+              <Cpu className="h-3 w-3 shrink-0 text-ink-3" />
+              <span className="text-2xs font-medium text-ink-2">3. Edge optimiser</span>
+            </div>
+            <div className="space-y-1">
+              <DataRow label="Place recognition" value="DBoW2 tree" prose />
+              <DataRow label="Solver" value="g2o Levenberg–Marquardt" prose />
+              <DataRow label="Residual (χ²)" value={`${mec.chi2Error.toFixed(4)} m`} />
+              <DataRow label="Iterations" value={formatCount(mec.optimizationIterations)} />
+            </div>
+            <p className="text-3xs leading-snug text-ink-4">
+              Inter-agent loop closures and SE(3) pose-graph relaxation across all submaps.
+            </p>
+          </div>
+
+          {/* 4. Unified map */}
+          <div
+            className={`flex flex-col gap-1.5 rounded border px-2.5 py-2 ${
+              isFused ? 'border-success-line bg-success-dim' : 'border-line bg-surface-2'
+            }`}
+          >
+            <div className="flex items-center gap-1.5 border-b border-line pb-1.5">
+              <Layers className="h-3 w-3 shrink-0 text-ink-3" />
+              <span className="text-2xs font-medium text-ink-2">4. Unified map</span>
+            </div>
+            <div className="space-y-1">
+              <DataRow label="Landmarks" value={formatCount(collabSlam.globalLandmarksTotal)} />
+              <DataRow label="Keyframes" value={formatCount(collabSlam.globalKeyframesTotal)} />
+              <DataRow
+                label="Confidence"
+                value={`${collabSlam.alignmentConfidence}%`}
+                tone={isFused ? 'success' : 'neutral'}
+              />
+              <DataRow label="Loop closures" value={formatCount(collabSlam.loopClosuresDetected)} />
+            </div>
+            <p className="text-3xs leading-snug text-ink-4">
+              One metric global map for joint planning and path finding.
+            </p>
           </div>
         </div>
       </div>
-    </div>
+
+      {/* Correspondences */}
+      <div className="mt-3">
+        <SectionLabel>Inter-agent visual correspondences</SectionLabel>
+        {collabSlam.sharedMatches.length === 0 ? (
+          <p className="rounded border border-line bg-surface-2 px-2.5 py-3 text-center text-2xs text-ink-4">
+            No correspondences yet — they appear once landmark matching runs.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {collabSlam.sharedMatches.map((match) => {
+              const key = `${match.sourceAgentId}/${match.targetAgentId}`;
+              const dx = match.targetLandmarkPos.x - match.sourceLandmarkPos.x;
+              const dy = match.targetLandmarkPos.y - match.sourceLandmarkPos.y;
+              const dz = match.targetLandmarkPos.z - match.sourceLandmarkPos.z;
+              return (
+                <div key={match.id} className="tile space-y-1.5 px-2.5 py-2">
+                  <div className="flex items-center justify-between gap-2 border-b border-line pb-1.5">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="telemetry text-2xs font-semibold text-ink">
+                        {match.sourceAgentId}
+                      </span>
+                      <ArrowRight className="h-3 w-3 shrink-0 text-ink-4" />
+                      <span className="telemetry text-2xs font-semibold text-ink">
+                        {match.targetAgentId}
+                      </span>
+                    </span>
+                    <StatusBadge
+                      label={`${Math.round(match.similarityScore * 100)}% match`}
+                      tone={match.similarityScore > 0.85 ? 'success' : 'warning'}
+                    />
+                  </div>
+                  <div className="text-3xs text-ink-3">{PAIR_REGION[key] ?? 'Shared overlap'}</div>
+                  <DataRow
+                    label="SE(3) translation"
+                    value={`${dx.toFixed(1)}, ${dy.toFixed(1)}, ${dz.toFixed(1)} m`}
+                  />
+                  <DataRow
+                    label="Residual"
+                    value={`${match.residualErrorMeters.toFixed(3)} m`}
+                    tone={match.residualErrorMeters > 0.5 ? 'warning' : 'success'}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Aggregate */}
+      <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+        <MetricTile
+          label="Shared landmarks"
+          value={formatCount(collabSlam.sharedLandmarksCount)}
+          caption="Matched across agents"
+          size="sm"
+        />
+        <MetricTile
+          label="Graph nodes"
+          value={formatCount(mec.poseGraphNodes)}
+          caption="Keyframe vertices"
+          size="sm"
+        />
+        <MetricTile
+          label="Graph edges"
+          value={formatCount(mec.poseGraphEdges)}
+          caption="Covisibility constraints"
+          size="sm"
+        />
+        <MetricTile
+          label="Relative pose"
+          value={collabSlam.relativePoseEstimated ? 'Estimated' : 'Pending'}
+          caption="Agent-to-agent transform"
+          tone={collabSlam.relativePoseEstimated ? 'success' : 'neutral'}
+          size="sm"
+        />
+      </div>
+    </Modal>
   );
 };
