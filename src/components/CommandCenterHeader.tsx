@@ -223,7 +223,7 @@ export const CommandCenterHeader: React.FC<CommandCenterHeaderProps> = ({
               Analytics
             </Button>
             <Button id="btn-open-architecture-modal" variant="neutral" size="sm" onClick={() => { onOpenArchitecture(); setIsPanelMenuOpen(false); }} icon={<BookOpen className="h-3 w-3" />}>
-              Architecture
+              3D architecture
             </Button>
           </div>
         )}

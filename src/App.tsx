@@ -10,7 +10,7 @@ import { SystemLogPanel } from './components/SystemLogPanel';
 import { MapFusionModal } from './components/MapFusionModal';
 import { DroneCameraModal } from './components/DroneCameraModal';
 import { AnalyticsModal } from './components/AnalyticsModal';
-import { ArchitectureModal } from './components/ArchitectureModal';
+import { DroneArchitectureModal } from './components/DroneArchitectureModal';
 
 export default function App() {
   const engine = useMemo(() => new SimulationEngine('urban_disaster'), []);
@@ -154,7 +154,7 @@ export default function App() {
         coverage={coverage}
       />
 
-      <ArchitectureModal
+      <DroneArchitectureModal
         isOpen={isArchitectureModalOpen}
         onClose={() => setIsArchitectureModalOpen(false)}
       />
