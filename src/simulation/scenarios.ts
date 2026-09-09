@@ -12,9 +12,9 @@ export const SCENARIOS: Record<string, Scenario> = {
     operationLabel: 'Disaster-zone reconstruction',
     missionObjective: 'Map blocked streets and damaged structures to deliver one shared 3D disaster reconstruction.',
     spawnPositions: {
-      'AAV-01': { x: -12, y: -118, z: 0 },
-      'AAV-02': { x: 0, y: -118, z: 0 },
-      'AAV-03': { x: 12, y: -118, z: 0 },
+      'AAV-01': { x: -3.8, y: -12, z: 0 },
+      'AAV-02': { x: 0, y: -12, z: 0 },
+      'AAV-03': { x: 3.8, y: -12, z: 0 },
     },
     aavRoutes: {
       'AAV-01': [{ x: -65, y: 55, z: 42 }, { x: -92, y: 72, z: 42 }, { x: -48, y: 83, z: 42 }, { x: -42, y: 35, z: 42 }, { x: -78, y: 28, z: 42 }],
@@ -102,9 +102,9 @@ export const SCENARIOS: Record<string, Scenario> = {
     operationLabel: 'Wildland search grid',
     missionObjective: 'Sweep trails, tree cover and camp approaches to locate missing-person targets and share their coordinates.',
     spawnPositions: {
-      'AAV-01': { x: -18, y: -130, z: 0 },
-      'AAV-02': { x: 0, y: -130, z: 0 },
-      'AAV-03': { x: 18, y: -130, z: 0 },
+      'AAV-01': { x: -3.8, y: -12, z: 0 },
+      'AAV-02': { x: 0, y: -12, z: 0 },
+      'AAV-03': { x: 3.8, y: -12, z: 0 },
     },
     aavRoutes: {
       'AAV-01': [{ x: -70, y: 50, z: 55 }, { x: -108, y: 78, z: 58 }, { x: -44, y: 96, z: 52 }, { x: -30, y: 38, z: 50 }, { x: -85, y: 20, z: 56 }],
@@ -176,9 +176,9 @@ export const SCENARIOS: Record<string, Scenario> = {
     operationLabel: 'Perimeter surveillance patrol',
     missionObjective: 'Inspect substation assets, perimeter corridors and restricted zones for anomalies and unauthorized activity.',
     spawnPositions: {
-      'AAV-01': { x: -14, y: -115, z: 0 },
-      'AAV-02': { x: 0, y: -115, z: 0 },
-      'AAV-03': { x: 14, y: -115, z: 0 },
+      'AAV-01': { x: -3.8, y: -12, z: 0 },
+      'AAV-02': { x: 0, y: -12, z: 0 },
+      'AAV-03': { x: 3.8, y: -12, z: 0 },
     },
     aavRoutes: {
       'AAV-01': [{ x: -60, y: 60, z: 44 }, { x: -98, y: 82, z: 44 }, { x: -102, y: 32, z: 44 }, { x: -48, y: 25, z: 44 }, { x: -32, y: 77, z: 44 }],
